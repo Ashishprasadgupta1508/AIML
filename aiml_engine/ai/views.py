@@ -42,9 +42,20 @@ def predict_project_api(request):
     try:
         project = get_project_by_id(project_id)
 
-    except Exception:
+    except Exception as e:
+        import traceback
+
+        print("========== PROJECT READ ERROR ==========")
+        print(f"Project ID: {project_id}")
+        print(f"Error: {e}")
+        traceback.print_exc()
+        print("========================================")
+
         return Response(
-            {"error": "Failed to read project data."},
+            {
+                "error": "Failed to read project data.",
+                "details": str(e),
+            },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
