@@ -1,5 +1,4 @@
-from sentence_transformers import SentenceTransformer
-import torch
+from fastembed import TextEmbedding
 
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
@@ -10,9 +9,9 @@ def get_model():
     global _model
 
     if _model is None:
-        _model = SentenceTransformer(
-            MODEL_NAME,
-            device="cpu"
+        _model = TextEmbedding(
+            model_name=MODEL_NAME,
+            threads=1,
         )
 
     return _model
@@ -21,11 +20,8 @@ def get_model():
 def generate_embedding(text):
     model = get_model()
 
-    with torch.inference_mode():
-        embedding = model.encode(
-            text,
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )
+    embeddings = model.embed([text])
+
+    embedding = next(embeddings)
 
     return embedding.tolist()
