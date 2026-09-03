@@ -19,15 +19,17 @@ def health_check(request):
     })
 
 
-@api_view(["POST"])
+@api_view(["GET"])
 @authentication_classes([AIMLAPIKeyAuthentication])
 def predict_project_api(request):
 
-    project_id = request.data.get("project_id")
+    project_id = request.query_params.get("project_id")
 
     if project_id is None:
         return Response(
-            {"error": "project_id is required."},
+            {
+                "error": "project_id is required."
+            },
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -35,7 +37,9 @@ def predict_project_api(request):
         project_id = int(project_id)
     except (TypeError, ValueError):
         return Response(
-            {"error": "project_id must be a valid integer."},
+            {
+                "error": "project_id must be a valid integer."
+            },
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -48,13 +52,15 @@ def predict_project_api(request):
         print("========== PROJECT READ ERROR ==========")
         print(f"Project ID: {project_id}")
         print(f"Error: {e}")
+
         traceback.print_exc()
+
         print("========================================")
 
         return Response(
             {
                 "error": "Failed to read project data.",
-                "details": str(e),
+                "details": str(e)
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
@@ -78,9 +84,12 @@ def predict_project_api(request):
 
     except Exception:
         import traceback
+
         traceback.print_exc()
 
         return Response(
-            {"error": "Prediction failed."},
+            {
+                "error": "Prediction failed."
+            },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
