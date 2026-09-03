@@ -1,15 +1,31 @@
 from sentence_transformers import SentenceTransformer
+import torch
+
+MODEL_NAME = "BAAI/bge-small-en-v1.5"
+
+_model = None
 
 
-MODEL_NAME = "BAAI/bge-m3"
+def get_model():
+    global _model
 
-model = SentenceTransformer(MODEL_NAME)
+    if _model is None:
+        _model = SentenceTransformer(
+            MODEL_NAME,
+            device="cpu"
+        )
+
+    return _model
 
 
 def generate_embedding(text):
-    embedding = model.encode(
-        text,
-        normalize_embeddings=True
-    )
+    model = get_model()
+
+    with torch.inference_mode():
+        embedding = model.encode(
+            text,
+            normalize_embeddings=True,
+            show_progress_bar=False
+        )
 
     return embedding.tolist()

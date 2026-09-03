@@ -3,19 +3,17 @@ from aiml_engine.ai.embedding_service import generate_embedding
 
 
 def _embedding_to_vector_string(embedding):
-    return "[" + ",".join(str(float(value)) for value in embedding) + "]"
+    return "[" + ",".join(
+        str(float(value))
+        for value in embedding
+    ) + "]"
 
 
 def search_similar_projects(
     text,
-    limit=5,
+    limit=10,
     exclude_project_id=None
 ):
-    """
-    Search similar projects while optionally excluding
-    the current project.
-    """
-
     embedding = generate_embedding(text)
     vector_string = _embedding_to_vector_string(embedding)
 
@@ -24,8 +22,8 @@ def search_similar_projects(
             cur.execute(
                 """
                 SELECT project_id, content, similarity
-                FROM match_documents(
-                    %s::extensions.vector(1024),
+                FROM match_documents_small(
+                    %s::extensions.vector(384),
                     %s,
                     %s
                 );
@@ -51,20 +49,9 @@ def search_similar_projects(
 
 def search_completed_similar_projects(
     text,
-    limit=10,
+    limit=50,
     exclude_project_id=None
 ):
-    """
-    Search only completed historical projects.
-
-    These projects have:
-    - actual_completion_date
-    - original_cost
-    - cumulative_expenditure
-
-    Used for historical cost prediction.
-    """
-
     embedding = generate_embedding(text)
     vector_string = _embedding_to_vector_string(embedding)
 
@@ -73,8 +60,8 @@ def search_completed_similar_projects(
             cur.execute(
                 """
                 SELECT project_id, content, similarity
-                FROM match_completed_documents(
-                    %s::extensions.vector(1024),
+                FROM match_completed_documents_small(
+                    %s::extensions.vector(384),
                     %s,
                     %s
                 );
