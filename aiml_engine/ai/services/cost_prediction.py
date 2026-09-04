@@ -1,4 +1,5 @@
 from statistics import median
+
 from aiml_engine.ai.database import get_connection
 
 
@@ -22,168 +23,324 @@ def _build_cost_warning(
     confidence,
 ):
     """
-    Generate a concise, project-specific cost warning.
+    Generate a concise, deterministic and data-driven cost warning.
 
-    The warning prioritizes the strongest cost signals instead of
-    concatenating every available condition. Maximum two sentences.
+    Warning generation uses:
+    - predicted budget movement
+    - historical variability
+    - number of completed comparable projects
+    - average similarity
+    - confidence
+
+    Same project + same data produces the same warning.
+    No randomness is introduced.
+
+    Runtime is READ-ONLY.
     """
-
-    # ---------------------------------------------------------
-    # No usable historical evidence
-    # ---------------------------------------------------------
 
     if historical_count == 0:
         return (
             "No sufficiently comparable completed project provides a "
-            "reliable cost outcome for validation, so the estimate should "
-            "be treated as highly uncertain."
+            "reliable cost outcome for validation, so the estimate "
+            "should be treated with high uncertainty."
         )
 
+    predicted_overrun = float(predicted_overrun)
+    spread = float(spread)
+    average_similarity = float(average_similarity)
+    historical_count = int(historical_count)
+
     # ---------------------------------------------------------
-    # Build the primary financial message
+    # 1. Budget position
     # ---------------------------------------------------------
 
-    if predicted_overrun > 50:
-        primary = (
+    if predicted_overrun >= 50:
+        budget_message = (
             f"The projected final cost is approximately "
             f"{predicted_overrun:.1f}% above the original budget, "
-            "indicating substantial financial pressure."
+            "indicating substantial financial exposure."
         )
 
-    elif predicted_overrun > 25:
-        primary = (
-            f"The project is projected to exceed its original budget "
-            f"by about {predicted_overrun:.1f}%, which warrants close "
-            "financial monitoring."
+    elif predicted_overrun >= 25:
+        budget_message = (
+            f"The projected final cost is estimated to be about "
+            f"{predicted_overrun:.1f}% above the original budget, "
+            "indicating a significant potential cost increase."
         )
 
-    elif predicted_overrun > 10:
-        primary = (
-            f"The estimated final cost is around "
-            f"{predicted_overrun:.1f}% above the original cost baseline."
+    elif predicted_overrun >= 10:
+        budget_message = (
+            f"The projected final cost is around "
+            f"{predicted_overrun:.1f}% above the original budget, "
+            "indicating a noticeable cost pressure."
         )
 
-    elif predicted_overrun > 5:
-        primary = (
-            f"A moderate cost increase of approximately "
-            f"{predicted_overrun:.1f}% is currently indicated."
+    elif predicted_overrun >= 3:
+        budget_message = (
+            f"A cost increase of approximately "
+            f"{predicted_overrun:.1f}% is projected against the "
+            "original budget."
         )
 
-    elif predicted_overrun < -25:
-        primary = (
+    elif predicted_overrun <= -25:
+        budget_message = (
             f"The projected final cost is approximately "
             f"{abs(predicted_overrun):.1f}% below the original budget, "
-            "indicating a potential saving."
+            "indicating a potentially substantial saving."
         )
 
-    elif predicted_overrun < -10:
-        primary = (
-            f"The current estimate indicates a potential saving of "
-            f"around {abs(predicted_overrun):.1f}% against the original budget."
+    elif predicted_overrun <= -10:
+        budget_message = (
+            f"The projected final cost indicates a potential saving "
+            f"of around {abs(predicted_overrun):.1f}% against the "
+            "original budget."
+        )
+
+    elif predicted_overrun <= -3:
+        budget_message = (
+            f"The projected final cost is approximately "
+            f"{abs(predicted_overrun):.1f}% below the original budget."
         )
 
     else:
-        primary = (
-            "The projected final cost remains close to the original "
-            "project budget."
+        budget_message = (
+            "The projected final cost remains close to the "
+            "original project budget."
         )
 
     # ---------------------------------------------------------
-    # Select the strongest supporting evidence
+    # 2. Historical evidence
     # ---------------------------------------------------------
 
-    if spread > 100:
-        evidence = (
-            f"However, comparable completed projects show a wide cost "
-            f"variation of approximately {spread:.1f} percentage points, "
-            "which limits confidence in the exact estimate."
+    if historical_count == 1:
+        evidence_message = (
+            "The estimate is based on only one completed comparable "
+            "project, so historical validation is very limited."
         )
 
-    elif spread > 50:
-        evidence = (
-            f"Historical cost outcomes vary by about {spread:.1f} "
-            "percentage points, so the final-cost estimate carries "
-            "meaningful uncertainty."
+    elif historical_count == 2:
+        evidence_message = (
+            "Only two completed comparable projects are available, "
+            "so the historical cost signal should be interpreted cautiously."
         )
 
-    elif spread > 25:
-        evidence = (
-            f"Comparable projects show moderate cost variation of "
-            f"approximately {spread:.1f} percentage points."
+    elif historical_count < 5:
+        evidence_message = (
+            f"The estimate is supported by {historical_count} completed "
+            "comparables, giving only a limited historical evidence base."
         )
 
-    elif confidence == "LOW":
-        if historical_count < 3:
-            evidence = (
-                f"Only {historical_count} comparable completed "
-                "project(s) were available, limiting confidence in the estimate."
-            )
-        elif average_similarity < 0.65:
-            evidence = (
-                "The historical comparisons have limited similarity to "
-                "the current project, reducing confidence in the estimate."
-            )
-        else:
-            evidence = (
-                "The available evidence is not strong enough to provide "
-                "high confidence in the exact final-cost estimate."
-            )
+    elif average_similarity >= 0.85:
+        evidence_message = (
+            f"The estimate is supported by {historical_count} highly "
+            "similar completed projects, giving the historical comparison "
+            "strong relevance."
+        )
+
+    elif average_similarity >= 0.80:
+        evidence_message = (
+            f"{historical_count} closely matched completed projects "
+            "provide strong comparative support for the cost outlook."
+        )
+
+    elif average_similarity >= 0.70:
+        evidence_message = (
+            f"{historical_count} completed comparable projects provide "
+            "a reasonable historical basis for the cost assessment."
+        )
+
+    elif average_similarity >= 0.65:
+        evidence_message = (
+            f"{historical_count} completed projects provide moderate "
+            "historical support, although project similarity is limited."
+        )
+
+    else:
+        evidence_message = (
+            f"The {historical_count} historical comparisons have relatively "
+            "weak similarity to the current project, reducing validation strength."
+        )
+
+    # ---------------------------------------------------------
+    # 3. Historical variability
+    # ---------------------------------------------------------
+
+    if spread >= 150:
+        variability_message = (
+            f"Historical cost outcomes vary by approximately "
+            f"{spread:.1f} percentage points, showing very high cost "
+            "uncertainty."
+        )
+
+    elif spread >= 100:
+        variability_message = (
+            f"Historical cost outcomes span approximately "
+            f"{spread:.1f} percentage points, making the final-cost "
+            "estimate less precise."
+        )
+
+    elif spread >= 50:
+        variability_message = (
+            f"Comparable projects show considerable cost variation "
+            f"of about {spread:.1f} percentage points."
+        )
+
+    elif spread >= 25:
+        variability_message = (
+            f"Historical cost outcomes vary by approximately "
+            f"{spread:.1f} percentage points, introducing some uncertainty."
+        )
+
+    else:
+        variability_message = (
+            "Comparable completed projects show relatively consistent "
+            "cost outcomes."
+        )
+
+    # ---------------------------------------------------------
+    # 4. Confidence
+    # ---------------------------------------------------------
+
+    if confidence == "LOW":
+        confidence_message = (
+            "The available historical evidence provides limited confidence "
+            "in the exact final-cost estimate."
+        )
 
     elif confidence == "MEDIUM":
-        evidence = (
-            "The estimate has moderate historical support and should be "
-            "validated against ongoing expenditure."
+        confidence_message = (
+            "The estimate has moderate confidence and should be checked "
+            "against current expenditure."
         )
 
     else:
-        evidence = (
-            "Comparable historical outcomes are relatively consistent, "
-            "providing stronger support for the estimate."
+        confidence_message = (
+            "The estimate has comparatively strong historical support."
         )
 
     # ---------------------------------------------------------
-    # Add a second signal only when it materially changes the warning
+    # 5. Select the strongest project-specific signals
     # ---------------------------------------------------------
 
-    range_difference_percent = 0.0
+    # Major cost increase:
+    if predicted_overrun >= 25:
 
-    if original_cost > 0:
-        range_difference_percent = (
-            abs(predicted_final_cost - original_cost)
-            / original_cost
-        ) * 100
+        primary = budget_message
 
-    # If the historical spread already explains uncertainty, don't
-    # repeat it with another confidence sentence.
-    if (
-        spread <= 50
-        and range_difference_percent > 50
-        and predicted_overrun <= 50
-    ):
-        evidence = (
-            "The projected final cost also differs substantially from "
-            "the original cost baseline, increasing financial uncertainty."
-        )
+        if spread >= 100:
+            secondary = variability_message
+        elif confidence == "LOW":
+            secondary = confidence_message
+        elif average_similarity < 0.70:
+            secondary = evidence_message
+        else:
+            secondary = evidence_message
 
-    elif (
-        spread <= 50
-        and range_difference_percent > 25
-        and predicted_overrun <= 25
-        and confidence == "LOW"
-    ):
-        evidence = (
-            "The projected cost differs noticeably from the original "
-            "baseline, while the available evidence provides limited "
-            "confidence in the exact outcome."
-        )
+    # Major projected saving:
+    elif predicted_overrun <= -25:
 
-    return f"{primary} {evidence}"
+        primary = budget_message
+
+        if spread >= 100:
+            secondary = variability_message
+        elif confidence == "LOW":
+            secondary = confidence_message
+        elif average_similarity < 0.70:
+            secondary = evidence_message
+        else:
+            secondary = evidence_message
+
+    # Moderate cost increase:
+    elif predicted_overrun >= 10:
+
+        primary = budget_message
+
+        if spread >= 100:
+            secondary = variability_message
+        elif confidence == "LOW":
+            secondary = confidence_message
+        elif average_similarity < 0.70:
+            secondary = evidence_message
+        else:
+            secondary = evidence_message
+
+    # Moderate saving:
+    elif predicted_overrun <= -10:
+
+        primary = budget_message
+
+        if spread >= 100:
+            secondary = variability_message
+        elif confidence == "LOW":
+            secondary = confidence_message
+        elif average_similarity < 0.70:
+            secondary = evidence_message
+        else:
+            secondary = evidence_message
+
+    # Smaller budget movement:
+    elif abs(predicted_overrun) >= 3:
+
+        primary = budget_message
+
+        if spread >= 150:
+            secondary = variability_message
+        elif confidence == "LOW":
+            secondary = confidence_message
+        elif average_similarity < 0.65:
+            secondary = evidence_message
+        elif spread >= 50:
+            secondary = variability_message
+        else:
+            secondary = evidence_message
+
+    # Near-budget prediction:
+    else:
+
+        if spread >= 150:
+            primary = budget_message
+            secondary = (
+                f"Historical outcomes vary by about {spread:.1f} "
+                "percentage points, so the apparently stable budget "
+                "position should be interpreted cautiously."
+            )
+
+        elif spread >= 100:
+            primary = budget_message
+            secondary = variability_message
+
+        elif confidence == "LOW":
+            primary = budget_message
+            secondary = confidence_message
+
+        elif average_similarity < 0.65:
+            primary = budget_message
+            secondary = evidence_message
+
+        elif spread >= 50:
+            primary = budget_message
+            secondary = variability_message
+
+        else:
+            primary = budget_message
+            secondary = evidence_message
+
+    # ---------------------------------------------------------
+    # 6. Avoid duplicate information
+    # ---------------------------------------------------------
+
+    if primary == secondary:
+        return primary
+
+    return f"{primary} {secondary}"
 
 
 def _no_history_result(original_cost):
     return {
         "predicted_final_cost": round(original_cost, 2),
+
         "predicted_cost_overrun_percent": 0.0,
+
         "expected_cost_range": {
             "min_cost": round(
                 original_cost * (1 + HISTORICAL_P25 / 100),
@@ -194,16 +351,23 @@ def _no_history_result(original_cost):
                 2
             ),
         },
+
         "confidence": "LOW",
+
         "historical_projects_used": 0,
+
         "historical_projects_found": 0,
+
         "average_similarity": 0.0,
+
         "historical_spread_percent": None,
+
         "warning": (
             "No completed project with a reliable actual cost outcome "
             "was sufficiently comparable to this project, so the cost "
             "prediction should be treated as highly uncertain."
         ),
+
         "historical_projects": [],
     }
 
@@ -215,17 +379,26 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
     if original_cost is None or float(original_cost) <= 0:
         return {
             "predicted_final_cost": None,
+
             "predicted_cost_overrun_percent": None,
+
             "expected_cost_range": None,
+
             "confidence": "LOW",
+
             "historical_projects_used": 0,
+
             "historical_projects_found": 0,
+
             "average_similarity": 0.0,
+
             "historical_spread_percent": None,
+
             "warning": (
                 "A reliable cost warning cannot be generated because "
                 "the original project cost is missing or invalid."
             ),
+
             "historical_projects": [],
         }
 
@@ -463,7 +636,7 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
         confidence = "LOW"
 
     # ---------------------------------------------------------
-    # DYNAMIC PROJECT-SPECIFIC WARNING.
+    # Dynamic project-specific warning.
     # ---------------------------------------------------------
 
     warning = _build_cost_warning(

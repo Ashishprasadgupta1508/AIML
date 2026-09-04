@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from aiml_engine.ai.embedding_service import generate_embedding
 
 from aiml_engine.ai.services.vector_search import (
@@ -12,9 +10,47 @@ from aiml_engine.ai.services.time_prediction import predict_time
 from aiml_engine.ai.services.risk_engine import calculate_risk
 
 
-# ---------------------------------------------------------
+# =========================================================
+# Project Text Builder
+# =========================================================
+
+def _build_project_text(project):
+    """
+    Convert project information into a text representation
+    used for semantic similarity search.
+
+    READ ONLY.
+    """
+
+    fields = [
+        ("Project Name", project.get("project_name")),
+        ("Agency", project.get("agency")),
+        ("Ministry", project.get("ministry")),
+        ("Sector", project.get("sector")),
+        ("State", project.get("state")),
+        ("Progress Status", project.get("progress_status")),
+        ("Physical Progress", project.get("physical_progress")),
+        ("Original Cost", project.get("original_cost")),
+        ("Revised Cost", project.get("revised_cost")),
+        ("Start Date", project.get("start_date")),
+        ("Original Completion Date", project.get("original_completion_date")),
+        ("Revised Completion Date", project.get("revised_completion_date")),
+    ]
+
+    parts = []
+
+    for label, value in fields:
+        if value is None:
+            continue
+
+        parts.append(f"{label}: {value}")
+
+    return "\n".join(parts)
+
+
+# =========================================================
 # Similar Project Retrieval
-# ---------------------------------------------------------
+# =========================================================
 
 def retrieve_similar_projects(
     project,
@@ -22,16 +58,19 @@ def retrieve_similar_projects(
     limit=10,
 ):
     """
-    Retrieve general similar projects using an already
-    generated 384-dimensional embedding.
+    Retrieve general similar projects.
 
-    The embedding is generated only once per prediction.
+    The current project is excluded from the search.
+
+    READ ONLY.
     """
+
+    project_id = project.get("project_id")
 
     return search_similar_projects_by_embedding(
         embedding,
         limit=limit,
-        exclude_project_id=project.get("project_id"),
+        exclude_project_id=project_id,
     )
 
 
@@ -41,72 +80,42 @@ def retrieve_completed_similar_projects(
     limit=50,
 ):
     """
-    Retrieve only completed historical projects using
-    the same already-generated embedding.
+    Retrieve completed historical projects
+    similar to the current project.
 
-    These projects are used as historical evidence for
-    cost and time prediction.
+    The current project is excluded.
+
+    READ ONLY.
     """
+
+    project_id = project.get("project_id")
 
     return search_completed_similar_projects_by_embedding(
         embedding,
         limit=limit,
-        exclude_project_id=project.get("project_id"),
+        exclude_project_id=project_id,
     )
 
 
-# ---------------------------------------------------------
-# Clean Similar Project
-# ---------------------------------------------------------
+# =========================================================
+# Similar Project Cleaning
+# =========================================================
 
 def _clean_similar_project(item):
     """
-    Convert raw vector-search content into a small
-    API-safe object.
+    Keep only safe API fields for similar projects.
     """
-
-    content = item.get("content", "")
-
-    def extract_field(field_name):
-        prefix = f"{field_name}:"
-
-        for line in content.splitlines():
-            line = line.strip()
-
-            if line.startswith(prefix):
-                return line[len(prefix):].strip()
-
-        return None
 
     return {
         "project_id": item.get("project_id"),
-
-        "similarity": round(
-            float(item.get("similarity", 0)),
-            4,
-        ),
-
-        "project_name": extract_field(
-            "Project Name"
-        ),
-
-        "sector": extract_field(
-            "Sector"
-        ),
-
-        "state": extract_field(
-            "State"
-        ),
-
-        "agency": extract_field(
-            "Agency"
-        ),
+        "similarity": item.get("similarity"),
+        "content": item.get("content"),
     }
 
 
-# ---------------------------------------------------------
-# Main Prediction Pipeline
-# ---------------------------------------------------------
+# =========================================================
+# COMPLETE AI / ML PIPELINE
+# =========================================================
 
 def predict_project(project):
     """
@@ -128,15 +137,15 @@ def predict_project(project):
         │                             │
         └──────────────┬──────────────┘
                        ↓
-                Cost Prediction
+                 Cost Prediction
                        ↓
-                Time Prediction
+                 Time Prediction
                        ↓
-                 Risk Engine
+                  Risk Engine
                        ↓
                 Final API Response
 
-    Runtime is read-only with respect to Supabase.
+    Runtime is READ-ONLY with respect to Supabase.
     """
 
     # -----------------------------------------------------
@@ -149,9 +158,7 @@ def predict_project(project):
     # 2. Generate embedding ONLY ONCE
     # -----------------------------------------------------
 
-    embedding = generate_embedding(
-        project_text
-    )
+    embedding = generate_embedding(project_text)
 
     # -----------------------------------------------------
     # 3. General similar projects
@@ -167,12 +174,10 @@ def predict_project(project):
     # 4. Completed historical projects
     # -----------------------------------------------------
 
-    completed_similar_projects = (
-        retrieve_completed_similar_projects(
-            project,
-            embedding,
-            limit=50,
-        )
+    completed_similar_projects = retrieve_completed_similar_projects(
+        project,
+        embedding,
+        limit=50,
     )
 
     # -----------------------------------------------------
@@ -200,9 +205,11 @@ def predict_project(project):
     risk_result = calculate_risk(
         project,
 
-        predicted_delay_days=predicted_delay[
-            "predicted_delay_days"
-        ],
+        predicted_delay_days=(
+            predicted_delay.get(
+                "predicted_delay_days"
+            )
+        ),
 
         similar_projects=similar_projects,
 
@@ -270,11 +277,12 @@ def predict_project(project):
             "project_id"
         ),
 
-        # ---------------------------------------------
-        # Cost Prediction
-        # ---------------------------------------------
+        # =================================================
+        # COST PREDICTION
+        # =================================================
 
         "cost_prediction": {
+
             "predicted_final_cost": (
                 cost_result.get(
                     "predicted_final_cost"
@@ -305,18 +313,44 @@ def predict_project(project):
                 )
             ),
 
+            "historical_projects_found": (
+                cost_result.get(
+                    "historical_projects_found"
+                )
+            ),
+
+            "average_similarity": (
+                cost_result.get(
+                    "average_similarity"
+                )
+            ),
+
+            "historical_spread_percent": (
+                cost_result.get(
+                    "historical_spread_percent"
+                )
+            ),
+
             "warning": (
                 cost_result.get(
                     "warning"
                 )
             ),
+
+            "historical_projects": (
+                cost_result.get(
+                    "historical_projects",
+                    []
+                )
+            ),
         },
 
-        # ---------------------------------------------
-        # Time Prediction
-        # ---------------------------------------------
+        # =================================================
+        # TIME PREDICTION
+        # =================================================
 
         "time_prediction": {
+
             "predicted_delay_days": (
                 predicted_delay.get(
                     "predicted_delay_days"
@@ -335,9 +369,25 @@ def predict_project(project):
                 )
             ),
 
-            "confidence": (
+            # -------------------------------------------------
+            # FIX:
+            # Preserve the individual ML prediction
+            # -------------------------------------------------
+
+            "ml_predicted_delay_days": (
                 predicted_delay.get(
-                    "confidence"
+                    "ml_predicted_delay_days"
+                )
+            ),
+
+            # -------------------------------------------------
+            # FIX:
+            # Preserve the historical prediction
+            # -------------------------------------------------
+
+            "historical_predicted_delay_days": (
+                predicted_delay.get(
+                    "historical_predicted_delay_days"
                 )
             ),
 
@@ -353,6 +403,12 @@ def predict_project(project):
                 )
             ),
 
+            "confidence": (
+                predicted_delay.get(
+                    "confidence"
+                )
+            ),
+
             "warning": (
                 predicted_delay.get(
                     "warning"
@@ -360,11 +416,12 @@ def predict_project(project):
             ),
         },
 
-        # ---------------------------------------------
-        # Risk Assessment
-        # ---------------------------------------------
+        # =================================================
+        # RISK ASSESSMENT
+        # =================================================
 
         "risk": {
+
             "risk_level": (
                 risk_result.get(
                     "risk_level"
@@ -402,27 +459,14 @@ def predict_project(project):
                 )
             ),
         },
+
+        # =================================================
+        # SIMILAR PROJECT EVIDENCE
+        # =================================================
+
+        "similar_projects": clean_similar_projects,
+
+        "completed_similar_projects": (
+            clean_completed_projects
+        ),
     }
-
-
-# ---------------------------------------------------------
-# Project Text Builder
-# ---------------------------------------------------------
-
-def _build_project_text(project):
-    """
-    Convert the current project data into the text used
-    for semantic similarity search.
-    """
-
-    return f"""
-Project Name: {project.get('project_name', '')}
-Agency: {project.get('agency', '')}
-Ministry: {project.get('ministry', '')}
-Sector: {project.get('sector', '')}
-State: {project.get('state', '')}
-Original Cost: {project.get('original_cost', '')}
-Physical Progress: {project.get('physical_progress', '')}
-Start Date: {project.get('start_date', '')}
-Original Completion Date: {project.get('original_completion_date', '')}
-""".strip()
