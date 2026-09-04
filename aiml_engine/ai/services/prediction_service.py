@@ -336,13 +336,6 @@ def predict_project(project):
                     "warning"
                 )
             ),
-
-            "historical_projects": (
-                cost_result.get(
-                    "historical_projects",
-                    []
-                )
-            ),
         },
 
         # =================================================
@@ -369,21 +362,11 @@ def predict_project(project):
                 )
             ),
 
-            # -------------------------------------------------
-            # FIX:
-            # Preserve the individual ML prediction
-            # -------------------------------------------------
-
             "ml_predicted_delay_days": (
                 predicted_delay.get(
                     "ml_predicted_delay_days"
                 )
             ),
-
-            # -------------------------------------------------
-            # FIX:
-            # Preserve the historical prediction
-            # -------------------------------------------------
 
             "historical_predicted_delay_days": (
                 predicted_delay.get(
