@@ -98,22 +98,6 @@ def retrieve_completed_similar_projects(
 
 
 # =========================================================
-# Similar Project Cleaning
-# =========================================================
-
-def _clean_similar_project(item):
-    """
-    Keep only safe API fields for similar projects.
-    """
-
-    return {
-        "project_id": item.get("project_id"),
-        "similarity": item.get("similarity"),
-        "content": item.get("content"),
-    }
-
-
-# =========================================================
 # COMPLETE AI / ML PIPELINE
 # =========================================================
 
@@ -146,6 +130,10 @@ def predict_project(project):
                 Final API Response
 
     Runtime is READ-ONLY with respect to Supabase.
+
+    NOTE:
+    Similar project data is used internally for AI prediction,
+    but is intentionally NOT exposed in the final API response.
     """
 
     # -----------------------------------------------------
@@ -161,7 +149,7 @@ def predict_project(project):
     embedding = generate_embedding(project_text)
 
     # -----------------------------------------------------
-    # 3. General similar projects
+    # 3. Retrieve general similar projects
     # -----------------------------------------------------
 
     similar_projects = retrieve_similar_projects(
@@ -171,13 +159,15 @@ def predict_project(project):
     )
 
     # -----------------------------------------------------
-    # 4. Completed historical projects
+    # 4. Retrieve completed historical projects
     # -----------------------------------------------------
 
-    completed_similar_projects = retrieve_completed_similar_projects(
-        project,
-        embedding,
-        limit=50,
+    completed_similar_projects = (
+        retrieve_completed_similar_projects(
+            project,
+            embedding,
+            limit=50,
+        )
     )
 
     # -----------------------------------------------------
@@ -250,27 +240,18 @@ def predict_project(project):
         ),
     )
 
-    # -----------------------------------------------------
-    # 8. Clean general similar projects
-    # -----------------------------------------------------
-
-    clean_similar_projects = [
-        _clean_similar_project(item)
-        for item in similar_projects
-    ]
-
-    # -----------------------------------------------------
-    # 9. Clean completed historical projects
-    # -----------------------------------------------------
-
-    clean_completed_projects = [
-        _clean_similar_project(item)
-        for item in completed_similar_projects
-    ]
-
-    # -----------------------------------------------------
-    # 10. Final API response
-    # -----------------------------------------------------
+    # =====================================================
+    # FINAL API RESPONSE
+    # =====================================================
+    #
+    # Similar projects are intentionally NOT returned here.
+    #
+    # They remain available internally for:
+    #   - cost prediction
+    #   - time prediction
+    #   - risk assessment
+    #
+    # =====================================================
 
     return {
         "project_id": project.get(
@@ -442,14 +423,4 @@ def predict_project(project):
                 )
             ),
         },
-
-        # =================================================
-        # SIMILAR PROJECT EVIDENCE
-        # =================================================
-
-        "similar_projects": clean_similar_projects,
-
-        "completed_similar_projects": (
-            clean_completed_projects
-        ),
     }
