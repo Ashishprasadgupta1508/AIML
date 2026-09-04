@@ -5,12 +5,193 @@ from aiml_engine.ai.database import get_connection
 MIN_SIMILARITY = 0.60
 SEARCH_LIMIT = 50
 
-# Prototype calibration from 25 completed projects.
-# These values are not true out-of-sample confidence intervals.
+# Prototype calibration from completed projects.
 HISTORICAL_P25 = -37.90
 HISTORICAL_P75 = 3.68
 HISTORICAL_P90 = 26.58
 HISTORICAL_P95 = 59.55
+
+
+def _build_cost_warning(
+    original_cost,
+    predicted_final_cost,
+    predicted_overrun,
+    spread,
+    average_similarity,
+    historical_count,
+    confidence,
+):
+    """
+    Generate a project-specific cost warning.
+
+    Warning is based on:
+    - predicted cost overrun
+    - predicted final cost
+    - historical variability
+    - number of comparable projects
+    - similarity strength
+    - confidence
+    """
+
+    warnings = []
+
+    # ---------------------------------------------------------
+    # 1. Historical evidence availability
+    # ---------------------------------------------------------
+
+    if historical_count == 0:
+        return (
+            "No completed project with a reliable actual cost outcome "
+            "was sufficiently comparable to this project, so the cost "
+            "prediction should be treated as highly uncertain."
+        )
+
+    if historical_count < 3:
+        warnings.append(
+            f"Only {historical_count} comparable completed "
+            f"project{' was' if historical_count == 1 else 's were'} "
+            "available for cost analysis."
+        )
+
+    elif average_similarity < 0.65:
+        warnings.append(
+            "The available historical projects have relatively weak "
+            "similarity to the current project."
+        )
+
+    elif average_similarity >= 0.80:
+        warnings.append(
+            "The cost estimate is supported by strongly similar "
+            "completed historical projects."
+        )
+
+    # ---------------------------------------------------------
+    # 2. Cost overrun condition
+    # ---------------------------------------------------------
+
+    if predicted_overrun > 50:
+        warnings.append(
+            f"The predicted final cost is approximately "
+            f"{predicted_overrun:.1f}% above the original budget, "
+            "indicating severe cost escalation risk."
+        )
+
+    elif predicted_overrun > 25:
+        warnings.append(
+            f"The project is currently projected to exceed its "
+            f"original budget by about {predicted_overrun:.1f}%."
+        )
+
+    elif predicted_overrun > 10:
+        warnings.append(
+            f"The estimated final cost is about "
+            f"{predicted_overrun:.1f}% higher than the original "
+            "project cost."
+        )
+
+    elif predicted_overrun > 5:
+        warnings.append(
+            f"A moderate cost increase of approximately "
+            f"{predicted_overrun:.1f}% is indicated relative to "
+            "the original budget."
+        )
+
+    elif predicted_overrun < -25:
+        warnings.append(
+            f"The projected final cost is approximately "
+            f"{abs(predicted_overrun):.1f}% below the original budget."
+        )
+
+    elif predicted_overrun < -10:
+        warnings.append(
+            f"The current estimate indicates a projected saving of "
+            f"around {abs(predicted_overrun):.1f}% against the "
+            "original budget."
+        )
+
+    else:
+        warnings.append(
+            "The projected final cost remains relatively close to "
+            "the original project budget."
+        )
+
+    # ---------------------------------------------------------
+    # 3. Historical cost variability
+    # ---------------------------------------------------------
+
+    if spread > 100:
+        warnings.append(
+            f"Comparable completed projects show a very wide cost "
+            f"outcome range of approximately {spread:.1f} percentage "
+            "points, increasing estimation uncertainty."
+        )
+
+    elif spread > 50:
+        warnings.append(
+            f"Historical cost outcomes for comparable projects vary "
+            f"by about {spread:.1f} percentage points."
+        )
+
+    elif spread > 25:
+        warnings.append(
+            f"Historical cost outcomes show moderate variation "
+            f"of approximately {spread:.1f} percentage points."
+        )
+
+    else:
+        warnings.append(
+            "Comparable historical projects show relatively "
+            "consistent cost outcomes."
+        )
+
+    # ---------------------------------------------------------
+    # 4. Confidence
+    # ---------------------------------------------------------
+
+    if confidence == "LOW":
+        warnings.append(
+            "The available evidence does not provide strong "
+            "confidence in the exact final-cost estimate."
+        )
+
+    elif confidence == "MEDIUM":
+        warnings.append(
+            "The estimate has moderate confidence and should be "
+            "reviewed against ongoing expenditure."
+        )
+
+    else:
+        warnings.append(
+            "The estimate has relatively strong historical support."
+        )
+
+    # ---------------------------------------------------------
+    # 5. Predicted cost range
+    # ---------------------------------------------------------
+
+    if original_cost > 0:
+        range_difference_percent = (
+            abs(predicted_final_cost - original_cost)
+            / original_cost
+        ) * 100
+
+        if range_difference_percent > 50:
+            warnings.append(
+                "The projected final cost differs substantially "
+                "from the original cost baseline."
+            )
+
+        elif range_difference_percent > 25:
+            warnings.append(
+                "The projected final cost shows a noticeable "
+                "departure from the original cost baseline."
+            )
+
+    # ---------------------------------------------------------
+    # Combine into one project-specific warning
+    # ---------------------------------------------------------
+
+    return " ".join(warnings)
 
 
 def _no_history_result(original_cost):
@@ -32,7 +213,11 @@ def _no_history_result(original_cost):
         "historical_projects_found": 0,
         "average_similarity": 0.0,
         "historical_spread_percent": None,
-        "warning": "No suitable completed historical projects were found.",
+        "warning": (
+            "No completed project with a reliable actual cost outcome "
+            "was sufficiently comparable to this project, so the cost "
+            "prediction should be treated as highly uncertain."
+        ),
         "historical_projects": [],
     }
 
@@ -51,7 +236,10 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
             "historical_projects_found": 0,
             "average_similarity": 0.0,
             "historical_spread_percent": None,
-            "warning": "Original project cost is missing or invalid.",
+            "warning": (
+                "A reliable cost warning cannot be generated because "
+                "the original project cost is missing or invalid."
+            ),
             "historical_projects": [],
         }
 
@@ -64,6 +252,7 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
         item
         for item in similar_projects
         if float(item.get("similarity", 0)) >= MIN_SIMILARITY
+        and item.get("project_id") != project.get("project_id")
     ]
 
     if not similar_projects:
@@ -128,9 +317,8 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
         result = _no_history_result(original_cost)
 
         result["warning"] = (
-            "Similar projects were found, but no completed "
-            "historical projects with actual cost outcomes "
-            "were available."
+            "Similar projects were identified, but none had a usable "
+            "completed cost outcome for comparison with this project."
         )
 
         return result
@@ -181,7 +369,6 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
 
     # ---------------------------------------------------------
     # Similarity-weighted historical estimate.
-    # Higher similarity gets more influence.
     # ---------------------------------------------------------
 
     total_weight = 0.0
@@ -244,9 +431,6 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
 
     # ---------------------------------------------------------
     # Expected cost range.
-    #
-    # Prototype range based on historical percentile
-    # calibration.
     # ---------------------------------------------------------
 
     range_min_overrun = min(
@@ -293,24 +477,18 @@ def predict_cost(project, similar_projects=None, limit=SEARCH_LIMIT):
         confidence = "LOW"
 
     # ---------------------------------------------------------
-    # Warning.
+    # DYNAMIC PROJECT-SPECIFIC WARNING.
     # ---------------------------------------------------------
 
-    warning = None
-
-    if spread > 100:
-
-        warning = (
-            "Historical completed projects show very high "
-            "cost variability."
-        )
-
-    elif spread > 50:
-
-        warning = (
-            "Historical completed projects show moderate "
-            "cost variability."
-        )
+    warning = _build_cost_warning(
+        original_cost=original_cost,
+        predicted_final_cost=predicted_final_cost,
+        predicted_overrun=predicted_overrun,
+        spread=spread,
+        average_similarity=average_similarity,
+        historical_count=len(filtered),
+        confidence=confidence,
+    )
 
     return {
         "predicted_final_cost": round(
