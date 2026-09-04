@@ -40,19 +40,10 @@ def _build_time_warning(
     range_max,
 ):
     """
-    Generate a project-specific schedule warning.
+    Generate a concise, project-specific schedule warning.
 
-    The warning is based on:
-    - predicted delay
-    - planned project duration
-    - ML prediction
-    - historical prediction
-    - historical evidence
-    - similarity
-    - uncertainty
-    - confidence
-
-    Runtime is READ-ONLY.
+    The warning prioritizes the strongest schedule signals instead of
+    concatenating every available condition. Maximum two sentences.
     """
 
     historical_count = len(historical_delays)
@@ -64,409 +55,280 @@ def _build_time_warning(
     if historical_prediction is None:
 
         if final_prediction > 1095:
-
             return (
-                "The project is facing a prolonged schedule risk, "
-                "and sufficiently comparable completed projects are "
-                "not available to strongly validate the expected "
-                "delay. The current timeline should therefore be "
-                "treated with caution."
+                f"The projected delay of approximately {final_prediction:.0f} "
+                "days indicates a prolonged schedule risk. Comparable "
+                "completed-project evidence is insufficient to validate "
+                "the exact timeline."
             )
 
         elif final_prediction > 730:
-
             return (
-                "The projected schedule indicates significant delay "
-                "pressure, but comparable completed-project evidence "
-                "is limited. The expected completion timeline should "
-                "be monitored closely."
+                f"The schedule outlook indicates a significant delay of "
+                f"about {final_prediction:.0f} days, but comparable "
+                "historical evidence is limited."
             )
 
         elif final_prediction > 365:
-
             return (
-                "The current assessment indicates meaningful schedule "
-                "slippage, while limited historical evidence reduces "
-                "confidence in the exact delay estimate."
+                f"An estimated delay of approximately {final_prediction:.0f} "
+                "days indicates meaningful schedule slippage, while the "
+                "limited historical evidence reduces confidence."
             )
 
         elif final_prediction > 90:
-
             return (
-                "Some schedule slippage is anticipated, although the "
-                "available historical evidence is insufficient to "
-                "strongly validate the projected delay."
+                f"Some schedule slippage of around {final_prediction:.0f} "
+                "days is anticipated, although there is limited historical "
+                "evidence to validate the estimate."
             )
 
-        else:
-
-            return (
-                "The current model does not indicate a major schedule "
-                "problem, but the limited historical evidence means "
-                "the assessment should be monitored as the project "
-                "progresses."
-            )
+        return (
+            "The current model does not indicate a major schedule problem, "
+            "but the limited historical evidence warrants continued monitoring."
+        )
 
     # =====================================================
-    # 2. ML VS HISTORICAL COMPARISON
+    # 2. PRIMARY DELAY MESSAGE
+    # =====================================================
+
+    if final_prediction > 1825:
+        primary = (
+            f"The projected delay of approximately {final_prediction:.0f} "
+            "days represents an exceptionally prolonged extension beyond "
+            "the planned timeline."
+        )
+
+    elif final_prediction > 1095:
+        primary = (
+            f"The schedule outlook indicates a prolonged delay of about "
+            f"{final_prediction:.0f} days, suggesting substantial pressure "
+            "on the original completion plan."
+        )
+
+    elif final_prediction > 730:
+        primary = (
+            f"The expected delay of approximately {final_prediction:.0f} "
+            "days is likely to materially affect the original completion plan."
+        )
+
+    elif final_prediction > 365:
+        primary = (
+            f"The current schedule outlook indicates a meaningful extension "
+            f"of around {final_prediction:.0f} days beyond the planned timeline."
+        )
+
+    elif final_prediction > 180:
+        primary = (
+            f"The project is showing noticeable schedule slippage, with "
+            f"approximately {final_prediction:.0f} days of delay projected."
+        )
+
+    elif final_prediction > 90:
+        primary = (
+            f"The assessment indicates moderate schedule slippage of about "
+            f"{final_prediction:.0f} days that should be monitored closely."
+        )
+
+    elif final_prediction > 30:
+        primary = (
+            f"A limited schedule extension of approximately "
+            f"{final_prediction:.0f} days is currently anticipated."
+        )
+
+    elif final_prediction > 0:
+        primary = (
+            f"Some schedule slippage of approximately "
+            f"{final_prediction:.0f} days is currently projected."
+        )
+
+    else:
+        primary = (
+            "The current assessment does not indicate a significant "
+            "delay against the planned schedule."
+        )
+
+    # =====================================================
+    # 3. DETERMINE THE STRONGEST SUPPORTING SIGNAL
     # =====================================================
 
     disagreement = abs(
         ml_prediction - historical_prediction
     )
 
-    # =====================================================
-    # 3. HISTORICAL EVIDENCE QUALITY
-    # =====================================================
-
-    if historical_count == 1:
-
-        evidence_message = (
-            "The schedule assessment is supported by only one "
-            "completed comparable project, which limits historical "
-            "validation."
-        )
-
-    elif historical_count == 2:
-
-        evidence_message = (
-            "Only two completed comparable projects were available "
-            "for schedule comparison, so the historical signal "
-            "should be interpreted cautiously."
-        )
-
-    elif historical_count < 5:
-
-        evidence_message = (
-            f"{historical_count} completed comparable projects "
-            "provide some historical support, although the evidence "
-            "base remains relatively small."
-        )
-
-    elif average_similarity >= 0.85:
-
-        evidence_message = (
-            "The schedule outlook is strongly supported by highly "
-            "similar completed projects."
-        )
-
-    elif average_similarity >= 0.80:
-
-        evidence_message = (
-            "The available historical projects provide strong "
-            "comparative support for the current schedule outlook."
-        )
-
-    elif average_similarity >= 0.70:
-
-        evidence_message = (
-            "The historical comparison provides a reasonable basis "
-            "for assessing the expected schedule behaviour."
-        )
-
-    elif average_similarity >= 0.65:
-
-        evidence_message = (
-            "Historical projects provide moderate support, although "
-            "their similarity to the current project is not especially strong."
-        )
-
-    else:
-
-        evidence_message = (
-            "The available historical comparisons have relatively "
-            "weak similarity to the current project."
-        )
-
-    # =====================================================
-    # 4. DELAY SEVERITY
-    # =====================================================
-
-    if final_prediction > 1825:
-
-        delay_message = (
-            "The projected schedule indicates an exceptionally "
-            "prolonged delay that could substantially affect project "
-            "completion and downstream activities."
-        )
-
-    elif final_prediction > 1095:
-
-        delay_message = (
-            "The projected completion outlook indicates a prolonged "
-            "delay, suggesting that substantial schedule recovery "
-            "measures may be required."
-        )
-
-    elif final_prediction > 730:
-
-        delay_message = (
-            "The project is showing significant schedule pressure, "
-            "with the expected delay likely to materially affect "
-            "the original completion plan."
-        )
-
-    elif final_prediction > 365:
-
-        delay_message = (
-            "The current schedule outlook indicates a meaningful "
-            "extension beyond the planned completion timeline."
-        )
-
-    elif final_prediction > 180:
-
-        delay_message = (
-            "The project is showing noticeable schedule slippage "
-            "that could affect planned completion if the trend "
-            "continues."
-        )
-
-    elif final_prediction > 90:
-
-        delay_message = (
-            "The assessment indicates moderate schedule slippage "
-            "that should be monitored through upcoming milestones."
-        )
-
-    elif final_prediction > 30:
-
-        delay_message = (
-            "A limited schedule extension is currently anticipated, "
-            "with continued milestone monitoring recommended."
-        )
-
-    elif final_prediction > 0:
-
-        delay_message = (
-            "The project shows some expected schedule slippage, "
-            "but the projected extension remains comparatively limited."
-        )
-
-    else:
-
-        delay_message = (
-            "The current assessment does not indicate a significant "
-            "delay against the planned schedule."
-        )
-
-    # =====================================================
-    # 5. ML VS HISTORICAL RELATIONSHIP
-    # =====================================================
-
-    if disagreement > 1460:
-
-        agreement_message = (
-            "The ML estimate and historical project behaviour differ "
-            "by more than four years, creating substantial uncertainty "
-            "around the expected completion timeline."
-        )
-
-    elif disagreement > 1095:
-
-        agreement_message = (
-            "The model and historical evidence indicate a very large "
-            "difference in expected delay, making the final schedule "
-            "outlook particularly uncertain."
-        )
-
-    elif disagreement > 730:
-
-        agreement_message = (
-            "The ML estimate and historical project behaviour differ "
-            "substantially, increasing uncertainty around the expected "
-            "completion timeline."
-        )
-
-    elif disagreement > 365:
-
-        agreement_message = (
-            "The model and historical evidence indicate noticeably "
-            "different schedule outcomes, so the predicted timeline "
-            "should be reviewed carefully."
-        )
-
-    elif disagreement > 180:
-
-        agreement_message = (
-            "The model and historical evidence are broadly aligned, "
-            "although their estimated delay outcomes show meaningful "
-            "variation."
-        )
-
-    elif disagreement > 90:
-
-        agreement_message = (
-            "The two prediction approaches show some difference, "
-            "but both provide a broadly comparable schedule outlook."
-        )
-
-    elif disagreement > 30:
-
-        agreement_message = (
-            "The ML estimate follows the historical signal reasonably "
-            "closely, with only a modest difference between the two."
-        )
-
-    else:
-
-        agreement_message = (
-            "The ML estimate closely follows the behaviour observed "
-            "in comparable completed projects."
-        )
-
-    # =====================================================
-    # 6. SCHEDULE UNCERTAINTY
-    # =====================================================
-
     range_width = max(
-        0,
+        0.0,
         float(range_max) - float(range_min)
     )
 
     if planned_duration_days > 0:
-
         uncertainty_ratio = (
             range_width / planned_duration_days
         )
-
-    else:
-
-        uncertainty_ratio = 0
-
-    if uncertainty_ratio > 4:
-
-        uncertainty_message = (
-            "The possible delay outcomes span an extremely broad "
-            "range compared with the original project duration, "
-            "indicating very high schedule uncertainty."
+        delay_ratio = (
+            final_prediction / planned_duration_days
         )
+    else:
+        uncertainty_ratio = 0.0
+        delay_ratio = 0.0
+
+    # -----------------------------------------------------
+    # First priority: major disagreement between models
+    # -----------------------------------------------------
+
+    if disagreement > 1460:
+
+        support = (
+            "The ML and historical estimates differ by more than four "
+            "years, making the exact completion timeline highly uncertain."
+        )
+
+    elif disagreement > 1095:
+
+        support = (
+            "The ML and historical estimates differ by more than three "
+            "years, creating substantial uncertainty around the expected timeline."
+        )
+
+    elif disagreement > 730:
+
+        support = (
+            "The ML and historical estimates differ substantially, "
+            "so the projected completion timeline should be validated carefully."
+        )
+
+    elif disagreement > 365:
+
+        support = (
+            "The model and historical evidence point to noticeably different "
+            "delay outcomes, reducing confidence in the exact timeline."
+        )
+
+    # -----------------------------------------------------
+    # Second priority: very broad schedule uncertainty
+    # -----------------------------------------------------
 
     elif uncertainty_ratio > 3:
 
-        uncertainty_message = (
-            "The possible delay outcomes span a very broad range "
-            "relative to the original project duration."
+        support = (
+            "The possible delay outcomes span a very broad range relative "
+            "to the original project duration, limiting precision."
         )
 
     elif uncertainty_ratio > 2:
 
-        uncertainty_message = (
-            "The expected delay range remains wide compared with "
-            "the project's planned execution period."
+        support = (
+            "The expected delay range is wide relative to the planned "
+            "execution period, adding uncertainty to the forecast."
         )
 
     elif uncertainty_ratio > 1:
 
-        uncertainty_message = (
-            "There is noticeable variation in the possible schedule "
-            "outcome, making milestone-level monitoring important."
+        support = (
+            "The schedule range shows substantial variation, making "
+            "milestone-level validation important."
         )
 
     elif uncertainty_ratio > 0.5:
 
-        uncertainty_message = (
-            "The projected schedule has a moderate uncertainty "
-            "range relative to the original execution period."
+        support = (
+            "The projected schedule carries moderate uncertainty relative "
+            "to the original execution period."
+        )
+
+    # -----------------------------------------------------
+    # Third priority: evidence quality
+    # -----------------------------------------------------
+
+    elif historical_count < 3:
+
+        support = (
+            f"Only {historical_count} comparable completed project(s) "
+            "were available, so the historical signal should be interpreted cautiously."
+        )
+
+    elif average_similarity < 0.65:
+
+        support = (
+            "The available historical projects have relatively weak "
+            "similarity to the current project, limiting validation strength."
+        )
+
+    elif average_similarity >= 0.85:
+
+        support = (
+            "The schedule outlook is supported by highly similar "
+            "completed projects, providing strong historical evidence."
+        )
+
+    elif average_similarity >= 0.80:
+
+        support = (
+            "Comparable completed projects provide strong historical "
+            "support for the current schedule outlook."
+        )
+
+    elif average_similarity >= 0.70:
+
+        support = (
+            "Historical comparisons provide useful support for the "
+            "current schedule assessment."
         )
 
     else:
 
-        uncertainty_message = (
-            "The estimated schedule range remains relatively "
-            "contained compared with the original project duration."
+        support = (
+            "Historical comparisons provide some support, but their "
+            "similarity limits the strength of the validation."
         )
 
     # =====================================================
-    # 7. CONFIDENCE
+    # 4. CONFIDENCE ONLY WHEN IT ADDS NEW INFORMATION
     # =====================================================
 
     if confidence == "LOW":
 
-        confidence_message = (
-            "Overall confidence in the exact delay estimate is low."
-        )
+        if (
+            disagreement <= 365
+            and uncertainty_ratio <= 2
+            and historical_count >= 3
+        ):
+            support = (
+                f"{support[:-1] if support.endswith('.') else support}; "
+                "overall confidence in the exact delay estimate remains low."
+            )
 
     elif confidence == "MEDIUM":
 
-        confidence_message = (
-            "The prediction has moderate confidence and should be "
-            "validated against actual milestone performance."
-        )
-
-    else:
-
-        confidence_message = (
-            "The available model and historical evidence provide "
-            "relatively strong support for the schedule estimate."
-        )
+        if (
+            disagreement <= 365
+            and uncertainty_ratio <= 1
+        ):
+            support = (
+                f"{support[:-1] if support.endswith('.') else support}, "
+                "with moderate confidence in the projected timeline."
+            )
 
     # =====================================================
-    # 8. PLANNED-DURATION RELATIONSHIP
+    # 5. AVOID REDUNDANT DURATION SENTENCES
     # =====================================================
 
-    if planned_duration_days > 0:
-
-        delay_ratio = (
-            final_prediction / planned_duration_days
+    # When the delay itself is already the dominant signal, don't append
+    # another sentence saying that the delay is a large portion of duration.
+    # Only add this information if it materially changes interpretation.
+    if (
+        delay_ratio > 2
+        and disagreement <= 365
+        and uncertainty_ratio <= 2
+        and historical_count >= 3
+        and confidence != "LOW"
+    ):
+        support = (
+            "The projected delay is more than twice the original planned "
+            "execution duration, indicating substantial schedule exposure."
         )
 
-    else:
-
-        delay_ratio = 0
-
-    if delay_ratio > 2:
-
-        duration_message = (
-            "The projected delay is more than twice the originally "
-            "planned execution duration, indicating substantial "
-            "schedule exposure."
-        )
-
-    elif delay_ratio > 1:
-
-        duration_message = (
-            "The projected delay is comparable to or greater than "
-            "the original planned execution duration."
-        )
-
-    elif delay_ratio > 0.50:
-
-        duration_message = (
-            "The expected delay represents a substantial portion "
-            "of the project's original planned duration."
-        )
-
-    elif delay_ratio > 0.25:
-
-        duration_message = (
-            "The anticipated delay represents a noticeable portion "
-            "of the original project schedule."
-        )
-
-    else:
-
-        duration_message = (
-            "The projected delay remains relatively small compared "
-            "with the original planned execution period."
-        )
-
-    # =====================================================
-    # 9. BUILD FINAL WARNING
-    # =====================================================
-
-    messages = [
-        delay_message,
-        evidence_message,
-        agreement_message,
-        uncertainty_message,
-        duration_message,
-        confidence_message,
-    ]
-
-    # Remove exact duplicates.
-    messages = list(dict.fromkeys(messages))
-
-    return " ".join(messages)
+    return f"{primary} {support}"
 
 
 # =========================================================

@@ -22,152 +22,130 @@ def _build_cost_warning(
     confidence,
 ):
     """
-    Generate a project-specific cost warning.
+    Generate a concise, project-specific cost warning.
 
-    Warning is based on:
-    - predicted cost overrun
-    - predicted final cost
-    - historical variability
-    - number of comparable projects
-    - similarity strength
-    - confidence
+    The warning prioritizes the strongest cost signals instead of
+    concatenating every available condition. Maximum two sentences.
     """
 
-    warnings = []
-
     # ---------------------------------------------------------
-    # 1. Historical evidence availability
+    # No usable historical evidence
     # ---------------------------------------------------------
 
     if historical_count == 0:
         return (
-            "No completed project with a reliable actual cost outcome "
-            "was sufficiently comparable to this project, so the cost "
-            "prediction should be treated as highly uncertain."
-        )
-
-    if historical_count < 3:
-        warnings.append(
-            f"Only {historical_count} comparable completed "
-            f"project{' was' if historical_count == 1 else 's were'} "
-            "available for cost analysis."
-        )
-
-    elif average_similarity < 0.65:
-        warnings.append(
-            "The available historical projects have relatively weak "
-            "similarity to the current project."
-        )
-
-    elif average_similarity >= 0.80:
-        warnings.append(
-            "The cost estimate is supported by strongly similar "
-            "completed historical projects."
+            "No sufficiently comparable completed project provides a "
+            "reliable cost outcome for validation, so the estimate should "
+            "be treated as highly uncertain."
         )
 
     # ---------------------------------------------------------
-    # 2. Cost overrun condition
+    # Build the primary financial message
     # ---------------------------------------------------------
 
     if predicted_overrun > 50:
-        warnings.append(
-            f"The predicted final cost is approximately "
+        primary = (
+            f"The projected final cost is approximately "
             f"{predicted_overrun:.1f}% above the original budget, "
-            "indicating severe cost escalation risk."
+            "indicating substantial financial pressure."
         )
 
     elif predicted_overrun > 25:
-        warnings.append(
-            f"The project is currently projected to exceed its "
-            f"original budget by about {predicted_overrun:.1f}%."
+        primary = (
+            f"The project is projected to exceed its original budget "
+            f"by about {predicted_overrun:.1f}%, which warrants close "
+            "financial monitoring."
         )
 
     elif predicted_overrun > 10:
-        warnings.append(
-            f"The estimated final cost is about "
-            f"{predicted_overrun:.1f}% higher than the original "
-            "project cost."
+        primary = (
+            f"The estimated final cost is around "
+            f"{predicted_overrun:.1f}% above the original cost baseline."
         )
 
     elif predicted_overrun > 5:
-        warnings.append(
+        primary = (
             f"A moderate cost increase of approximately "
-            f"{predicted_overrun:.1f}% is indicated relative to "
-            "the original budget."
+            f"{predicted_overrun:.1f}% is currently indicated."
         )
 
     elif predicted_overrun < -25:
-        warnings.append(
+        primary = (
             f"The projected final cost is approximately "
-            f"{abs(predicted_overrun):.1f}% below the original budget."
+            f"{abs(predicted_overrun):.1f}% below the original budget, "
+            "indicating a potential saving."
         )
 
     elif predicted_overrun < -10:
-        warnings.append(
-            f"The current estimate indicates a projected saving of "
-            f"around {abs(predicted_overrun):.1f}% against the "
-            "original budget."
+        primary = (
+            f"The current estimate indicates a potential saving of "
+            f"around {abs(predicted_overrun):.1f}% against the original budget."
         )
 
     else:
-        warnings.append(
-            "The projected final cost remains relatively close to "
-            "the original project budget."
+        primary = (
+            "The projected final cost remains close to the original "
+            "project budget."
         )
 
     # ---------------------------------------------------------
-    # 3. Historical cost variability
+    # Select the strongest supporting evidence
     # ---------------------------------------------------------
 
     if spread > 100:
-        warnings.append(
-            f"Comparable completed projects show a very wide cost "
-            f"outcome range of approximately {spread:.1f} percentage "
-            "points, increasing estimation uncertainty."
+        evidence = (
+            f"However, comparable completed projects show a wide cost "
+            f"variation of approximately {spread:.1f} percentage points, "
+            "which limits confidence in the exact estimate."
         )
 
     elif spread > 50:
-        warnings.append(
-            f"Historical cost outcomes for comparable projects vary "
-            f"by about {spread:.1f} percentage points."
+        evidence = (
+            f"Historical cost outcomes vary by about {spread:.1f} "
+            "percentage points, so the final-cost estimate carries "
+            "meaningful uncertainty."
         )
 
     elif spread > 25:
-        warnings.append(
-            f"Historical cost outcomes show moderate variation "
-            f"of approximately {spread:.1f} percentage points."
+        evidence = (
+            f"Comparable projects show moderate cost variation of "
+            f"approximately {spread:.1f} percentage points."
         )
 
-    else:
-        warnings.append(
-            "Comparable historical projects show relatively "
-            "consistent cost outcomes."
-        )
-
-    # ---------------------------------------------------------
-    # 4. Confidence
-    # ---------------------------------------------------------
-
-    if confidence == "LOW":
-        warnings.append(
-            "The available evidence does not provide strong "
-            "confidence in the exact final-cost estimate."
-        )
+    elif confidence == "LOW":
+        if historical_count < 3:
+            evidence = (
+                f"Only {historical_count} comparable completed "
+                "project(s) were available, limiting confidence in the estimate."
+            )
+        elif average_similarity < 0.65:
+            evidence = (
+                "The historical comparisons have limited similarity to "
+                "the current project, reducing confidence in the estimate."
+            )
+        else:
+            evidence = (
+                "The available evidence is not strong enough to provide "
+                "high confidence in the exact final-cost estimate."
+            )
 
     elif confidence == "MEDIUM":
-        warnings.append(
-            "The estimate has moderate confidence and should be "
-            "reviewed against ongoing expenditure."
+        evidence = (
+            "The estimate has moderate historical support and should be "
+            "validated against ongoing expenditure."
         )
 
     else:
-        warnings.append(
-            "The estimate has relatively strong historical support."
+        evidence = (
+            "Comparable historical outcomes are relatively consistent, "
+            "providing stronger support for the estimate."
         )
 
     # ---------------------------------------------------------
-    # 5. Predicted cost range
+    # Add a second signal only when it materially changes the warning
     # ---------------------------------------------------------
+
+    range_difference_percent = 0.0
 
     if original_cost > 0:
         range_difference_percent = (
@@ -175,23 +153,31 @@ def _build_cost_warning(
             / original_cost
         ) * 100
 
-        if range_difference_percent > 50:
-            warnings.append(
-                "The projected final cost differs substantially "
-                "from the original cost baseline."
-            )
+    # If the historical spread already explains uncertainty, don't
+    # repeat it with another confidence sentence.
+    if (
+        spread <= 50
+        and range_difference_percent > 50
+        and predicted_overrun <= 50
+    ):
+        evidence = (
+            "The projected final cost also differs substantially from "
+            "the original cost baseline, increasing financial uncertainty."
+        )
 
-        elif range_difference_percent > 25:
-            warnings.append(
-                "The projected final cost shows a noticeable "
-                "departure from the original cost baseline."
-            )
+    elif (
+        spread <= 50
+        and range_difference_percent > 25
+        and predicted_overrun <= 25
+        and confidence == "LOW"
+    ):
+        evidence = (
+            "The projected cost differs noticeably from the original "
+            "baseline, while the available evidence provides limited "
+            "confidence in the exact outcome."
+        )
 
-    # ---------------------------------------------------------
-    # Combine into one project-specific warning
-    # ---------------------------------------------------------
-
-    return " ".join(warnings)
+    return f"{primary} {evidence}"
 
 
 def _no_history_result(original_cost):
