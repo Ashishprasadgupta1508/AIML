@@ -119,14 +119,102 @@ def predict_project_api(request):
 
 
 # =========================================================
+# HELPER FUNCTIONS FOR NEW API RESPONSE
+# =========================================================
+
+def _safe_float(value):
+    """
+    Safely convert a value to float.
+    """
+    try:
+        if value is None:
+            return None
+
+        return float(value)
+
+    except (TypeError, ValueError):
+        return value
+
+
+def _clean_project_content(content):
+    """
+    Convert stored project text into a cleaner API response.
+
+    This function only formats response data.
+    It does NOT change prediction logic or database data.
+    """
+
+    if not content:
+        return {}
+
+    project_data = {}
+
+    lines = str(content).splitlines()
+
+    for line in lines:
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            continue
+
+        project_data[key] = value
+
+    return project_data
+
+
+def _clean_similar_project(item):
+    """
+    Format a similar project for frontend/Postman.
+
+    Raw embedding is never returned.
+    """
+
+    content = item.get("content")
+
+    parsed_content = _clean_project_content(content)
+
+    return {
+        "project_id": item.get("project_id"),
+        "similarity": _safe_float(
+            item.get("similarity")
+        ),
+        "project_details": parsed_content,
+    }
+
+
+def _clean_similar_projects(projects):
+    """
+    Format list of similar projects.
+    """
+
+    if not projects:
+        return []
+
+    return [
+        _clean_similar_project(item)
+        for item in projects
+    ]
+
+
+# =========================================================
 # NEW API
 # =========================================================
-# GET API for NEW PROJECT
+# GET API FOR NEW PROJECT
 #
-# Data is entered at request time through query parameters.
-#
-# Existing API is NOT used here.
-# Existing API output remains untouched.
+# Existing API is NOT changed.
+# Prediction logic is NOT changed.
 # =========================================================
 
 @api_view(["GET"])
@@ -134,18 +222,35 @@ def predict_project_api(request):
 def predict_new_project_api(request):
 
     # -----------------------------------------------------
-    # Read project data from query parameters
+    # READ PROJECT DATA
     # -----------------------------------------------------
 
     project = {
         "project_id": request.query_params.get("project_id"),
 
-        "project_name": request.query_params.get("project_name"),
-        "agency": request.query_params.get("agency"),
-        "ministry": request.query_params.get("ministry"),
-        "sector": request.query_params.get("sector"),
-        "state": request.query_params.get("state"),
-        "progress_status": request.query_params.get("progress_status"),
+        "project_name": request.query_params.get(
+            "project_name"
+        ),
+
+        "agency": request.query_params.get(
+            "agency"
+        ),
+
+        "ministry": request.query_params.get(
+            "ministry"
+        ),
+
+        "sector": request.query_params.get(
+            "sector"
+        ),
+
+        "state": request.query_params.get(
+            "state"
+        ),
+
+        "progress_status": request.query_params.get(
+            "progress_status"
+        ),
 
         "physical_progress": request.query_params.get(
             "physical_progress"
@@ -173,7 +278,7 @@ def predict_new_project_api(request):
     }
 
     # -----------------------------------------------------
-    # Validate required fields
+    # VALIDATE REQUIRED FIELDS
     # -----------------------------------------------------
 
     required_fields = [
@@ -204,10 +309,11 @@ def predict_new_project_api(request):
         )
 
     # -----------------------------------------------------
-    # Convert numeric values
+    # CONVERT NUMERIC VALUES
     # -----------------------------------------------------
 
     try:
+
         project["physical_progress"] = float(
             project["physical_progress"]
         )
@@ -217,11 +323,13 @@ def predict_new_project_api(request):
         )
 
         if project["revised_cost"] not in (None, ""):
+
             project["revised_cost"] = float(
                 project["revised_cost"]
             )
 
     except (TypeError, ValueError):
+
         return Response(
             {
                 "error": (
@@ -233,17 +341,23 @@ def predict_new_project_api(request):
         )
 
     # -----------------------------------------------------
-    # Convert project_id if supplied
+    # CONVERT PROJECT ID
     # -----------------------------------------------------
 
     if project["project_id"] in (None, ""):
+
         project["project_id"] = None
+
     else:
+
         try:
+
             project["project_id"] = int(
                 project["project_id"]
             )
+
         except (TypeError, ValueError):
+
             return Response(
                 {
                     "error": "project_id must be a valid integer."
@@ -251,26 +365,30 @@ def predict_new_project_api(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # AI / ML PIPELINE
-    # -----------------------------------------------------
+    # =====================================================
 
     try:
 
         # -------------------------------------------------
-        # 1. Build project text
+        # 1. BUILD PROJECT TEXT
         # -------------------------------------------------
 
-        project_text = _build_project_text(project)
+        project_text = _build_project_text(
+            project
+        )
 
         # -------------------------------------------------
-        # 2. Generate embedding ONCE
+        # 2. GENERATE EMBEDDING ONCE
         # -------------------------------------------------
 
-        embedding = generate_embedding(project_text)
+        embedding = generate_embedding(
+            project_text
+        )
 
         # -------------------------------------------------
-        # 3. General similar projects
+        # 3. GENERAL SIMILAR PROJECTS
         # -------------------------------------------------
 
         similar_projects = retrieve_similar_projects(
@@ -280,7 +398,7 @@ def predict_new_project_api(request):
         )
 
         # -------------------------------------------------
-        # 4. Completed similar projects
+        # 4. COMPLETED SIMILAR PROJECTS
         # -------------------------------------------------
 
         completed_similar_projects = (
@@ -292,7 +410,7 @@ def predict_new_project_api(request):
         )
 
         # -------------------------------------------------
-        # 5. Cost prediction
+        # 5. COST PREDICTION
         # -------------------------------------------------
 
         cost_result = predict_cost(
@@ -301,7 +419,7 @@ def predict_new_project_api(request):
         )
 
         # -------------------------------------------------
-        # 6. Time prediction
+        # 6. TIME PREDICTION
         # -------------------------------------------------
 
         predicted_delay = predict_time(
@@ -312,7 +430,7 @@ def predict_new_project_api(request):
         )
 
         # -------------------------------------------------
-        # 7. Risk assessment
+        # 7. RISK ASSESSMENT
         # -------------------------------------------------
 
         risk_result = calculate_risk(
@@ -363,48 +481,99 @@ def predict_new_project_api(request):
             ),
         )
 
-        # -------------------------------------------------
-        # 8. Similar project response
-        # -------------------------------------------------
-        #
-        # We expose project_id + similarity.
-        # Raw embedding is never exposed.
-        #
-        # Content is included because you wanted similar
-        # projects visible in the new API.
-        # -------------------------------------------------
+        # =================================================
+        # CLEAN SIMILAR PROJECTS
+        # =================================================
 
-        clean_similar_projects = []
+        clean_similar_projects = (
+            _clean_similar_projects(
+                similar_projects
+            )
+        )
 
-        for item in similar_projects:
-            clean_similar_projects.append({
-                "project_id": item.get("project_id"),
-                "similarity": item.get("similarity"),
-                "content": item.get("content"),
-            })
+        clean_completed_similar_projects = (
+            _clean_similar_projects(
+                completed_similar_projects
+            )
+        )
 
-        clean_completed_similar_projects = []
+        # =================================================
+        # FINAL PROFESSIONAL RESPONSE
+        # =================================================
 
-        for item in completed_similar_projects:
-            clean_completed_similar_projects.append({
-                "project_id": item.get("project_id"),
-                "similarity": item.get("similarity"),
-                "content": item.get("content"),
-            })
+        response_data = {
 
-        # -------------------------------------------------
-        # 9. FINAL NEW PROJECT RESPONSE
-        # -------------------------------------------------
+            # -------------------------------------------------
+            # PROJECT
+            # -------------------------------------------------
 
-        return Response(
-            {
-                "project_id": project.get("project_id"),
+            "project": {
 
-                # =========================================
-                # COST PREDICTION
-                # =========================================
+                "project_id": project.get(
+                    "project_id"
+                ),
 
-                "cost_prediction": {
+                "project_name": project.get(
+                    "project_name"
+                ),
+
+                "agency": project.get(
+                    "agency"
+                ),
+
+                "ministry": project.get(
+                    "ministry"
+                ),
+
+                "sector": project.get(
+                    "sector"
+                ),
+
+                "state": project.get(
+                    "state"
+                ),
+
+                "progress_status": project.get(
+                    "progress_status"
+                ),
+
+                "physical_progress": project.get(
+                    "physical_progress"
+                ),
+
+                "original_cost": project.get(
+                    "original_cost"
+                ),
+
+                "revised_cost": project.get(
+                    "revised_cost"
+                ),
+
+                "start_date": project.get(
+                    "start_date"
+                ),
+
+                "original_completion_date": project.get(
+                    "original_completion_date"
+                ),
+
+                "revised_completion_date": project.get(
+                    "revised_completion_date"
+                ),
+            },
+
+            # -------------------------------------------------
+            # PREDICTIONS
+            # -------------------------------------------------
+
+            "predictions": {
+
+                # =============================================
+                # COST
+                # =============================================
+
+                "cost": {
+
                     "predicted_final_cost": (
                         cost_result.get(
                             "predicted_final_cost"
@@ -460,11 +629,12 @@ def predict_new_project_api(request):
                     ),
                 },
 
-                # =========================================
-                # TIME PREDICTION
-                # =========================================
+                # =============================================
+                # TIME
+                # =============================================
 
-                "time_prediction": {
+                "time": {
+
                     "predicted_delay_days": (
                         predicted_delay.get(
                             "predicted_delay_days"
@@ -520,14 +690,21 @@ def predict_new_project_api(request):
                     ),
                 },
 
-                # =========================================
+                # =============================================
                 # RISK
-                # =========================================
+                # =============================================
 
                 "risk": {
+
                     "risk_level": (
                         risk_result.get(
                             "risk_level"
+                        )
+                    ),
+
+                    "risk_score": (
+                        risk_result.get(
+                            "risk_score"
                         )
                     ),
 
@@ -549,12 +726,6 @@ def predict_new_project_api(request):
                         )
                     ),
 
-                    "risk_score": (
-                        risk_result.get(
-                            "risk_score"
-                        )
-                    ),
-
                     "detected_issues": (
                         risk_result.get(
                             "detected_issues",
@@ -562,25 +733,40 @@ def predict_new_project_api(request):
                         )
                     ),
                 },
+            },
 
-                # =========================================
-                # SIMILAR PROJECTS
-                # =========================================
+            # -------------------------------------------------
+            # SIMILAR PROJECT ANALYSIS
+            # -------------------------------------------------
+
+            "similar_project_analysis": {
+
+                "total_similar_projects": len(
+                    clean_similar_projects
+                ),
+
+                "total_completed_similar_projects": len(
+                    clean_completed_similar_projects
+                ),
 
                 "similar_projects": (
                     clean_similar_projects
                 ),
 
-                # =========================================
-                # COMPLETED SIMILAR PROJECTS
-                # =========================================
-
                 "completed_similar_projects": (
                     clean_completed_similar_projects
                 ),
             },
+        }
+
+        return Response(
+            response_data,
             status=status.HTTP_200_OK
         )
+
+    # =====================================================
+    # VALIDATION ERROR
+    # =====================================================
 
     except ValueError as e:
 
@@ -591,15 +777,23 @@ def predict_new_project_api(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # =====================================================
+    # INTERNAL ERROR
+    # =====================================================
+
     except Exception:
 
         import traceback
 
-        print("========== NEW PROJECT PREDICTION ERROR ==========")
+        print(
+            "========== NEW PROJECT PREDICTION ERROR =========="
+        )
 
         traceback.print_exc()
 
-        print("===================================================")
+        print(
+            "==================================================="
+        )
 
         return Response(
             {
