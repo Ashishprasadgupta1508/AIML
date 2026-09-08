@@ -23,10 +23,7 @@ from aiml_engine.ai.services.prediction_service import (
     retrieve_completed_similar_projects,
 )
 
-from aiml_engine.ai.services.cost_prediction import (
-    predict_cost,
-    _build_cost_escalation_analysis,
-)
+from aiml_engine.ai.services.cost_prediction import predict_cost
 from aiml_engine.ai.services.time_prediction import predict_time
 from aiml_engine.ai.services.risk_engine import calculate_risk
 
@@ -115,30 +112,39 @@ def predict_project_api(request):
         # -----------------------------------------------------
         # COST ESCALATION DRIVER ANALYSIS
         # -----------------------------------------------------
-        # Add this as a small, backward-compatible extension.
+        # Small backward-compatible extension.
         # Existing prediction fields are preserved.
         # -----------------------------------------------------
         cost_result = result.get("cost_prediction") if isinstance(result, dict) else None
 
         if isinstance(cost_result, dict) and "cost_escalation_analysis" not in cost_result:
+            historical_projects = cost_result.get("historical_projects") or []
+
+            historical_overruns = [
+                item.get("cost_overrun_percent")
+                for item in historical_projects
+                if isinstance(item, dict)
+                and item.get("cost_overrun_percent") is not None
+            ]
+
+            try:
+                historical_average_overrun = (
+                    sum(float(value) for value in historical_overruns)
+                    / len(historical_overruns)
+                    if historical_overruns
+                    else None
+                )
+            except (TypeError, ValueError):
+                historical_average_overrun = None
+
             cost_result = dict(cost_result)
             cost_result["cost_escalation_analysis"] = _build_cost_escalation_analysis(
                 project=project,
-                predicted_overrun=cost_result.get(
-                    "predicted_cost_overrun_percent"
-                ),
-                spread=cost_result.get(
-                    "historical_spread_percent"
-                ),
-                average_similarity=cost_result.get(
-                    "average_similarity",
-                    0.0,
-                ),
-                historical_average_overrun=None,
-                confidence=cost_result.get(
-                    "confidence",
-                    "LOW",
-                ),
+                predicted_overrun=cost_result.get("predicted_cost_overrun_percent"),
+                spread=cost_result.get("historical_spread_percent"),
+                average_similarity=cost_result.get("average_similarity", 0.0),
+                historical_average_overrun=historical_average_overrun,
+                confidence=cost_result.get("confidence", "LOW"),
             )
 
             result = dict(result)
@@ -165,6 +171,165 @@ def predict_project_api(request):
 # =========================================================
 # HELPER FUNCTIONS FOR NEW API RESPONSE
 # =========================================================
+
+def _build_cost_escalation_analysis(
+    project,
+    predicted_overrun,
+    spread,
+    average_similarity=0.0,
+    historical_average_overrun=None,
+    confidence="LOW",
+):
+    """
+    Build a small, deterministic cost-escalation driver analysis.
+
+    This helper is intentionally kept in views.py so the existing
+    cost_prediction.py contract remains unchanged.
+    """
+    try:
+        predicted_overrun = (
+            None if predicted_overrun is None else float(predicted_overrun)
+        )
+    except (TypeError, ValueError):
+        predicted_overrun = None
+
+    try:
+        spread = None if spread is None else float(spread)
+    except (TypeError, ValueError):
+        spread = None
+
+    try:
+        average_similarity = float(average_similarity or 0.0)
+    except (TypeError, ValueError):
+        average_similarity = 0.0
+
+    try:
+        historical_average_overrun = (
+            None
+            if historical_average_overrun is None
+            else float(historical_average_overrun)
+        )
+    except (TypeError, ValueError):
+        historical_average_overrun = None
+
+    original_cost = project.get("original_cost")
+    revised_cost = project.get("revised_cost")
+    expenditure = project.get("cumulative_expenditure")
+
+    try:
+        original_cost = (
+            None if original_cost in (None, "") else float(original_cost)
+        )
+    except (TypeError, ValueError):
+        original_cost = None
+
+    try:
+        revised_cost = (
+            None if revised_cost in (None, "") else float(revised_cost)
+        )
+    except (TypeError, ValueError):
+        revised_cost = None
+
+    try:
+        expenditure = (
+            None if expenditure in (None, "") else float(expenditure)
+        )
+    except (TypeError, ValueError):
+        expenditure = None
+
+    # Highest-priority driver: the model projects a material budget increase.
+    if predicted_overrun is not None and predicted_overrun >= 25:
+        return {
+            "code": "HIGH_PREDICTED_COST_PRESSURE",
+            "explanation": (
+                f"The model projects approximately {predicted_overrun:.1f}% "
+                "cost overrun against the original budget, indicating strong "
+                "cost escalation pressure."
+            ),
+            "impact": "HIGH",
+        }
+
+    # Current expenditure already above the approved/original cost.
+    if (
+        original_cost is not None
+        and original_cost > 0
+        and expenditure is not None
+        and expenditure > original_cost
+    ):
+        return {
+            "code": "EXPENDITURE_ABOVE_ORIGINAL_COST",
+            "explanation": (
+                "Cumulative expenditure is already above the original project "
+                "cost, indicating realized cost escalation."
+            ),
+            "impact": "HIGH",
+        }
+
+    # Revised cost is higher than the original approved cost.
+    if (
+        original_cost is not None
+        and original_cost > 0
+        and revised_cost is not None
+        and revised_cost > original_cost
+    ):
+        revised_increase = ((revised_cost - original_cost) / original_cost) * 100
+        return {
+            "code": "REVISED_COST_PRESSURE",
+            "explanation": (
+                f"The revised project cost is approximately {revised_increase:.1f}% "
+                "above the original cost, indicating an established budget "
+                "revision."
+            ),
+            "impact": "HIGH" if revised_increase >= 25 else "MODERATE",
+        }
+
+    # Strong historical variability makes escalation risk less predictable.
+    if spread is not None and spread >= 100:
+        return {
+            "code": "HIGH_HISTORICAL_COST_VARIABILITY",
+            "explanation": (
+                f"Comparable completed projects show approximately {spread:.1f} "
+                "percentage points of cost-outcome variation, making future "
+                "cost escalation highly uncertain."
+            ),
+            "impact": "HIGH",
+        }
+
+    # Historical comparables indicate a positive cost pressure.
+    if (
+        historical_average_overrun is not None
+        and historical_average_overrun >= 10
+    ):
+        return {
+            "code": "HISTORICAL_SECTOR_COST_PRESSURE",
+            "explanation": (
+                f"Comparable historical projects show an average cost overrun "
+                f"of approximately {historical_average_overrun:.1f}%, indicating "
+                "persistent cost pressure in the historical evidence."
+            ),
+            "impact": "MODERATE",
+        }
+
+    # Low confidence is itself an escalation-management signal.
+    if confidence == "LOW":
+        return {
+            "code": "LOW_COST_PREDICTION_CONFIDENCE",
+            "explanation": (
+                "The cost prediction has low confidence, so the project should "
+                "be monitored closely for emerging expenditure or escalation."
+            ),
+            "impact": "MODERATE",
+        }
+
+    return {
+        "code": "NO_MAJOR_COST_DRIVER_DETECTED",
+        "explanation": (
+            "No major cost escalation driver was detected from the available "
+            "prediction, expenditure, revised-cost, and historical signals."
+        ),
+        "impact": "LOW",
+    }
+
 
 def _safe_float(value):
     """
@@ -524,6 +689,39 @@ def predict_new_project_api(request):
                 )
             ),
         )
+
+        # -------------------------------------------------
+        # COST ESCALATION DRIVER ANALYSIS
+        # -------------------------------------------------
+        if isinstance(cost_result, dict):
+            historical_projects = cost_result.get("historical_projects") or []
+
+            historical_overruns = [
+                item.get("cost_overrun_percent")
+                for item in historical_projects
+                if isinstance(item, dict)
+                and item.get("cost_overrun_percent") is not None
+            ]
+
+            try:
+                historical_average_overrun = (
+                    sum(float(value) for value in historical_overruns)
+                    / len(historical_overruns)
+                    if historical_overruns
+                    else None
+                )
+            except (TypeError, ValueError):
+                historical_average_overrun = None
+
+            cost_result = dict(cost_result)
+            cost_result["cost_escalation_analysis"] = _build_cost_escalation_analysis(
+                project=project,
+                predicted_overrun=cost_result.get("predicted_cost_overrun_percent"),
+                spread=cost_result.get("historical_spread_percent"),
+                average_similarity=cost_result.get("average_similarity", 0.0),
+                historical_average_overrun=historical_average_overrun,
+                confidence=cost_result.get("confidence", "LOW"),
+            )
 
         # =================================================
         # CLEAN SIMILAR PROJECTS
