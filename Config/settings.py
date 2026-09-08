@@ -30,7 +30,7 @@ SECRET_KEY = 'django-insecure-v6w%7otb6)b)3ot5#p*n$d731))dhm4rxkl1a4@%iet7l_ftg*
 DEBUG = True
 
 ALLOWED_HOSTS = [
-    "aiml-s5z6.onrender.com",
+    "aiml-77m5.onrender.com",
     "localhost",
     "127.0.0.1",]
 
