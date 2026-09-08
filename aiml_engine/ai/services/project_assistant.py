@@ -15,8 +15,8 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model
 
 # Temporary provider/rate-limit errors that are safe to retry.
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-MAX_RETRIES_PER_MODEL = 2
-RETRY_BACKOFF_SECONDS = 1.5
+MAX_RETRIES_PER_MODEL = 0
+RETRY_BACKOFF_SECONDS = 1.0
 
 
 class AssistantConfigurationError(Exception):
@@ -165,14 +165,17 @@ IMPORTANT RESPONSE-FORMATTING RULES:
         ],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 1600,
+            "maxOutputTokens": 700,
         },
     }
 
     models = _get_models()
     last_error = None
 
-    with httpx.Client(timeout=45.0) as client:
+    # Keep the request responsive for hosted clients such as Postman Cloud Agent.
+    # The assistant is intentionally concise; a shorter generation also reduces latency.
+    timeout = httpx.Timeout(18.0, connect=5.0, read=16.0, write=5.0, pool=5.0)
+    with httpx.Client(timeout=timeout) as client:
         for model_index, current_model in enumerate(models):
             url = GEMINI_API_URL.format(model=current_model)
             response = None
