@@ -2,6 +2,7 @@ from rest_framework.decorators import (
     api_view,
     authentication_classes,
 )
+from functools import lru_cache
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -1376,11 +1377,14 @@ def _enrich_result_for_assistant(result, project):
     return enriched_result
 
 
+@lru_cache(maxsize=128)
 def _build_analysis_from_project_id(project_id):
     project = get_project_by_id(project_id)
     if project is None:
         return None, None
 
+    # Cache the expensive ML analysis for repeated assistant questions.
+    # This does not change /predict-project/ behavior or its response.
     result = predict_project(project)
     result = _enrich_result_for_assistant(result, project)
     return project, result

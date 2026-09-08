@@ -6,12 +6,10 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 DEFAULT_GEMINI_FALLBACK_MODELS = [
     "gemini-3.7-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
 ]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
@@ -19,8 +17,9 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 # Keep the total request short enough for Postman/Render free-tier clients
 # while still following Google's guidance for transient 503/429 errors.
-MAX_RETRIES_PER_MODEL = 1
-RETRY_BACKOFF_SECONDS = 1.25
+MAX_RETRIES_PER_MODEL = 0
+RETRY_BACKOFF_SECONDS = 0.0
+GEMINI_REQUEST_TIMEOUT_SECONDS = 5.0
 
 
 class AssistantConfigurationError(Exception):
@@ -55,10 +54,14 @@ def _get_models() -> List[str]:
         fallbacks = DEFAULT_GEMINI_FALLBACK_MODELS
 
     models = []
+    blocked_models = {"gemini-2.5-flash", "models/gemini-2.5-flash"}
     for model in [primary, *fallbacks]:
-        if model and model not in models:
-            models.append(model)
-    return models
+        clean_model = model.replace("models/", "", 1) if model.startswith("models/") else model
+        if clean_model in blocked_models:
+            continue
+        if clean_model and clean_model not in models:
+            models.append(clean_model)
+    return models[:3]
 
 
 def _compact(value: Any, max_chars: int = 12000) -> Any:
@@ -169,14 +172,14 @@ IMPORTANT RESPONSE-FORMATTING RULES:
         ],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 1600,
+            "maxOutputTokens": 900,
         },
     }
 
     models = _get_models()
     last_error = None
 
-    with httpx.Client(timeout=8.0) as client:
+    with httpx.Client(timeout=GEMINI_REQUEST_TIMEOUT_SECONDS) as client:
         for model_index, current_model in enumerate(models):
             url = GEMINI_API_URL.format(model=current_model)
             response = None
