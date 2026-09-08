@@ -801,3 +801,108 @@ def predict_new_project_api(request):
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+@api_view(["GET"])
+@authentication_classes([AIMLAPIKeyAuthentication])
+def early_warning_api(request):
+
+    project_id = request.query_params.get(
+        "project_id"
+    )
+
+    if project_id is None:
+
+        return Response(
+            {
+                "error": "project_id is required."
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+
+        project_id = int(
+            project_id
+        )
+
+    except (TypeError, ValueError):
+
+        return Response(
+            {
+                "error": (
+                    "project_id must be a valid integer."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+
+        project = get_project_by_id(
+            project_id
+        )
+
+    except Exception:
+
+        import traceback
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "error": (
+                    "Failed to read project data."
+                )
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    if project is None:
+
+        return Response(
+            {
+                "error": "Project not found.",
+                "project_id": project_id
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    try:
+
+        # -------------------------------------------------
+        # Existing prediction pipeline
+        # -------------------------------------------------
+        #
+        # We use the existing result internally.
+        # We DO NOT modify or return it here.
+        #
+
+        prediction_result = predict_project(
+            project
+        )
+
+        early_warning = generate_early_warning(
+            prediction_result
+        )
+
+        return Response(
+            {
+                "project_id": project_id,
+                "early_warning": early_warning
+            },
+            status=status.HTTP_200_OK
+        )
+
+    except Exception:
+
+        import traceback
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "error": (
+                    "Early warning generation failed."
+                )
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
