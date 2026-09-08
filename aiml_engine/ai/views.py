@@ -906,3 +906,62 @@ def early_warning_api(request):
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+@api_view(["GET"])
+@authentication_classes([AIMLAPIKeyAuthentication])
+def project_recommendation_api(request):
+
+    project_id = request.query_params.get("project_id")
+
+    if not project_id:
+        return Response(
+            {
+                "error": "project_id is required."
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        project_id = int(project_id)
+    except (TypeError, ValueError):
+        return Response(
+            {
+                "error": "project_id must be a valid integer."
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    project = get_project_by_id(project_id)
+
+    if not project:
+        return Response(
+            {
+                "error": "Project not found."
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    try:
+        prediction_result = predict_project(project)
+
+        recommendation_result = (
+            generate_project_recommendations(
+                prediction_result
+            )
+        )
+
+        return Response(
+            {
+                "project_id": project_id,
+                "recommendations": recommendation_result,
+            },
+            status=status.HTTP_200_OK
+        )
+
+    except Exception as exc:
+        return Response(
+            {
+                "error": "Unable to generate recommendations.",
+                "details": str(exc),
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

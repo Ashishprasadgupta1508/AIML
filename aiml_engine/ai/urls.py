@@ -26,4 +26,9 @@ urlpatterns = [
         views.early_warning_api,
         name="early-warning"
 ),
+path(
+    "project-recommendation/",
+    views.project_recommendation_api,
+    name="project-recommendation",
+),
 ]
