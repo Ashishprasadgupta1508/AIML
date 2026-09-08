@@ -1402,17 +1402,28 @@ def _build_local_project_assistant_answer(analysis, project=None):
     useful even when the external LLM provider returns 429/503/5xx.
     """
     analysis = analysis if isinstance(analysis, dict) else {}
-    project = project if isinstance(project, dict) else {}
-
     project_block = analysis.get("project") or {}
-    project_name = (
-        project.get("project_name")
-        or project.get("name")
-        or project_block.get("project_name")
-        or project_block.get("name")
-        or "Infrastructure Project"
-    )
-    project_id = project.get("project_id") or project_block.get("project_id") or "N/A"
+
+    def _project_value(*names):
+        if isinstance(project, dict):
+            for name in names:
+                value = project.get(name)
+                if value not in (None, ""):
+                    return value
+        else:
+            for name in names:
+                value = getattr(project, name, None)
+                if value not in (None, ""):
+                    return value
+        for name in names:
+            if isinstance(project_block, dict):
+                value = project_block.get(name)
+                if value not in (None, ""):
+                    return value
+        return None
+
+    project_name = _project_value("project_name", "name") or "Infrastructure Project"
+    project_id = _project_value("project_id", "id") or "N/A"
 
     cost = analysis.get("cost_prediction") or {}
     time_data = analysis.get("time_prediction") or {}
@@ -1420,9 +1431,7 @@ def _build_local_project_assistant_answer(analysis, project=None):
 
     risk_level = risk.get("risk_level") or "N/A"
     risk_score = risk.get("risk_score")
-    physical_progress = project.get("physical_progress")
-    if physical_progress is None:
-        physical_progress = project_block.get("physical_progress")
+    physical_progress = _project_value("physical_progress", "physical_progress_percent")
 
     predicted_cost = cost.get("predicted_final_cost")
     cost_overrun = cost.get("predicted_cost_overrun_percent")
@@ -1549,17 +1558,104 @@ def _build_local_project_assistant_answer(analysis, project=None):
     return "\n".join(lines)
 
 
-@lru_cache(maxsize=128)
+def _build_lightweight_assistant_analysis(project):
+    """Build fast, record-based context without running the heavy ML pipeline."""
+    if not isinstance(project, dict):
+        return {"project": {}}
+
+    def value(*names):
+        for name in names:
+            item = project.get(name)
+            if item not in (None, ""):
+                return item
+        return None
+
+    def number(item):
+        try:
+            return float(item) if item not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    original_cost = number(value("original_cost", "original_project_cost"))
+    revised_cost = number(value("revised_cost", "revised_project_cost"))
+    actual_days = number(value("actual_duration_days", "actual_duration"))
+    planned_days = number(value("planned_duration_days", "planned_duration"))
+    physical_progress = number(value("physical_progress", "physical_progress_percent"))
+
+    cost_revision_percent = None
+    if original_cost and revised_cost is not None:
+        cost_revision_percent = ((revised_cost - original_cost) / original_cost) * 100.0
+
+    delay_days = None
+    delay_percent = None
+    if actual_days is not None and planned_days is not None:
+        delay_days = actual_days - planned_days
+        if planned_days > 0:
+            delay_percent = (delay_days / planned_days) * 100.0
+
+    risk_level = "LOW"
+    if (cost_revision_percent is not None and cost_revision_percent >= 20) or (
+        delay_percent is not None and delay_percent >= 20
+    ):
+        risk_level = "MEDIUM"
+    if (cost_revision_percent is not None and cost_revision_percent >= 50) or (
+        delay_percent is not None and delay_percent >= 50
+    ):
+        risk_level = "HIGH"
+
+    issues = []
+    if delay_days is not None and delay_days > 0:
+        issues.append("SCHEDULE_DELAY")
+    if cost_revision_percent is not None and cost_revision_percent > 0:
+        issues.append("COST_REVISION_PRESSURE")
+    if physical_progress is not None and physical_progress < 80:
+        issues.append("LOW_PHYSICAL_PROGRESS")
+
+    project_context = {
+        "project_id": value("project_id", "id"),
+        "project_name": value("project_name", "name"),
+        "agency": value("agency"),
+        "ministry": value("ministry"),
+        "sector": value("sector"),
+        "state": value("state"),
+        "physical_progress": physical_progress,
+        "original_cost": original_cost,
+        "revised_cost": revised_cost,
+        "actual_duration_days": actual_days,
+        "planned_duration_days": planned_days,
+    }
+
+    return {
+        "project": project_context,
+        "cost_prediction": {
+            "predicted_cost_overrun_percent": cost_revision_percent,
+            "confidence": "RECORD_BASED",
+            "warning": "This assistant context uses current project records and does not run the full ML cost pipeline.",
+        },
+        "time_prediction": {
+            "predicted_delay_days": delay_days,
+            "planned_duration_days": planned_days,
+            "confidence": "RECORD_BASED",
+            "warning": "Delay is calculated from recorded actual and planned duration where available.",
+        },
+        "risk": {
+            "risk_level": risk_level,
+            "detected_issues": issues,
+            "reason": "Risk level is a fast record-based indicator used only to provide assistant context without blocking the request on the full ML pipeline.",
+            "recommended_solution": "Validate the latest schedule, expenditure, revised-cost and milestone records, and investigate any material variance before taking corrective action.",
+        },
+    }
+
+
 def _build_analysis_from_project_id(project_id):
     project = get_project_by_id(project_id)
     if project is None:
         return None, None
 
-    # Cache the expensive ML analysis for repeated assistant questions.
-    # This does not change /predict-project/ behavior or its response.
-    result = predict_project(project)
-    result = _enrich_result_for_assistant(result, project)
-    return project, result
+    # IMPORTANT: Do not run predict_project() here. That pipeline can load
+    # embeddings/models and exceed the API request timeout on a cold Render worker.
+    # The normal /predict-project/ endpoint remains unchanged.
+    return project, _build_lightweight_assistant_analysis(project)
 
 
 @api_view(["POST"])

@@ -1377,6 +1377,187 @@ def _enrich_result_for_assistant(result, project):
     return enriched_result
 
 
+def _fmt_number(value, decimals=1):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if decimals == 0:
+        return f"{number:,.0f}"
+    return f"{number:,.{decimals}f}"
+
+
+def _fmt_currency(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    return f"₹{number:,.2f}"
+
+
+def _build_local_project_assistant_answer(analysis, project=None):
+    """Deterministic fallback when Gemini is unavailable/quota-exhausted.
+
+    Uses only the already-computed project analysis. This keeps the endpoint
+    useful even when the external LLM provider returns 429/503/5xx.
+    """
+    analysis = analysis if isinstance(analysis, dict) else {}
+    project_block = analysis.get("project") or {}
+
+    def _project_value(*names):
+        if isinstance(project, dict):
+            for name in names:
+                value = project.get(name)
+                if value not in (None, ""):
+                    return value
+        else:
+            for name in names:
+                value = getattr(project, name, None)
+                if value not in (None, ""):
+                    return value
+        for name in names:
+            if isinstance(project_block, dict):
+                value = project_block.get(name)
+                if value not in (None, ""):
+                    return value
+        return None
+
+    project_name = _project_value("project_name", "name") or "Infrastructure Project"
+    project_id = _project_value("project_id", "id") or "N/A"
+
+    cost = analysis.get("cost_prediction") or {}
+    time_data = analysis.get("time_prediction") or {}
+    risk = analysis.get("risk") or {}
+
+    risk_level = risk.get("risk_level") or "N/A"
+    risk_score = risk.get("risk_score")
+    physical_progress = _project_value("physical_progress", "physical_progress_percent")
+
+    predicted_cost = cost.get("predicted_final_cost")
+    cost_overrun = cost.get("predicted_cost_overrun_percent")
+    cost_range = cost.get("expected_cost_range") or {}
+    delay = time_data.get("predicted_delay_days")
+    delay_range = time_data.get("expected_delay_range") or {}
+    planned_duration = time_data.get("planned_duration_days")
+    cost_confidence = cost.get("confidence") or "N/A"
+    time_confidence = time_data.get("confidence") or "N/A"
+    historical_used = cost.get("historical_projects_used") or cost.get("historical_projects_found")
+    similarity = cost.get("average_similarity")
+    spread = cost.get("historical_spread_percent")
+    escalation = cost.get("cost_escalation_analysis") or {}
+
+    ml_delay = time_data.get("ml_predicted_delay_days")
+    historical_delay = time_data.get("historical_predicted_delay_days")
+    recommended = risk.get("recommended_solution") or "Review the latest project records and validate the model indicators with current project status."
+    detected = risk.get("detected_issues") or []
+
+    executive = (
+        f"Project **{project_id}** has an overall risk level of **{risk_level}**"
+        + (f" (Risk Score: **{_fmt_number(risk_score, 0)}/10**)" if risk_score is not None else "")
+        + ". "
+    )
+    if physical_progress is not None:
+        executive += f"Recorded physical progress is **{_fmt_number(physical_progress, 1)}%**. "
+    if delay is not None:
+        executive += f"The schedule assessment indicates an estimated delay of approximately **{_fmt_number(delay, 1)} days**. "
+    if predicted_cost is not None:
+        executive += f"The projected final cost is **{_fmt_currency(predicted_cost)}**."
+
+    lines = [
+        "## Project Intelligence Summary",
+        "",
+        f"**Project Name / ID:** {project_name} | **Project ID:** {project_id}",
+        f"**Overall Risk:** **{risk_level}**" + (f" (Risk Score: {_fmt_number(risk_score, 0)}/10)" if risk_score is not None else ""),
+        "",
+        "### Executive Summary",
+        executive,
+        "",
+        "### Key Risk Indicators",
+        "",
+        "| Metric | Value | Status |",
+        "| :--- | :--- | :--- |",
+    ]
+
+    if predicted_cost is not None:
+        cost_value = f"{_fmt_currency(predicted_cost)}"
+        if cost_overrun is not None:
+            cost_value += f" ({_fmt_number(cost_overrun, 2)}%)"
+        lines.append(f"| **Predicted Final Cost** | {cost_value} | {cost_confidence} confidence |")
+    if delay is not None:
+        delay_value = f"{_fmt_number(delay, 1)} days"
+        if delay_range:
+            delay_value += f" (Range: {_fmt_number(delay_range.get('min_days'), 1)}–{_fmt_number(delay_range.get('max_days'), 1)} days)"
+        lines.append(f"| **Predicted Delay** | {delay_value} | {time_confidence} confidence |")
+    if physical_progress is not None:
+        lines.append(f"| **Physical Progress** | {_fmt_number(physical_progress, 1)}% | Recorded |")
+    if planned_duration is not None:
+        lines.append(f"| **Planned Duration** | {_fmt_number(planned_duration, 1)} days | Baseline |")
+    if escalation:
+        impact = escalation.get("impact") or "N/A"
+        explanation = escalation.get("explanation") or escalation.get("code") or "Recorded cost pressure"
+        lines.append(f"| **Cost Escalation** | {explanation} | {impact} impact |")
+    if spread is not None:
+        lines.append(f"| **Historical Cost Spread** | {_fmt_number(spread, 2)}% | Uncertainty indicator |")
+
+    lines += ["", "### Major Risks"]
+    if detected:
+        for issue in detected[:6]:
+            lines.append(f"- **{issue}**")
+    else:
+        if delay is not None and delay > 0:
+            lines.append(f"- **Schedule Delay:** approximately {_fmt_number(delay, 1)} days projected.")
+        if spread is not None and spread > 50:
+            lines.append(f"- **Cost Uncertainty:** historical spread of {_fmt_number(spread, 2)}%.")
+        if not detected and not lines[-1].startswith("-"):
+            lines.append("- No additional risk indicators were available in the supplied analysis.")
+
+    lines += ["", "### Expected Impact"]
+    if delay is not None and delay > 0:
+        lines.append(f"- **Timeline:** The projected delay of approximately {_fmt_number(delay, 1)} days may materially affect the planned completion schedule.")
+    if predicted_cost is not None and cost_range:
+        lines.append(
+            f"- **Financial:** The estimated final cost is {_fmt_currency(predicted_cost)}, with a modeled range of "
+            f"{_fmt_currency(cost_range.get('min_cost'))} to {_fmt_currency(cost_range.get('max_cost'))}."
+        )
+    if not any(line.startswith("-") for line in lines[lines.index("### Expected Impact") + 1:]):
+        lines.append("- Impact should be validated against the latest project records.")
+
+    lines += ["", "### Recommended Management Actions"]
+    for item in [recommended]:
+        if item:
+            for sentence in str(item).replace("\n", " ").split(". "):
+                sentence = sentence.strip().rstrip(".")
+                if sentence:
+                    lines.append(f"- {sentence}.")
+    lines += [
+        "- Reconcile current project status with the model's schedule and financial indicators.",
+        "- Continue monitoring expenditure, pending milestones, and closure activities.",
+    ]
+
+    lines += ["", "### Historical Evidence"]
+    if historical_used is not None:
+        evidence = f"- Analysis uses **{_fmt_number(historical_used, 0)}** comparable historical project(s)."
+        if similarity is not None:
+            evidence += f" Average similarity is **{_fmt_number(similarity, 4)}**."
+        lines.append(evidence)
+    if ml_delay is not None or historical_delay is not None:
+        lines.append(
+            f"- Schedule evidence: ML estimate **{_fmt_number(ml_delay, 1)} days** vs historical estimate **{_fmt_number(historical_delay, 1)} days**."
+        )
+    if spread is not None:
+        lines.append(f"- Historical cost outcome spread is **{_fmt_number(spread, 2)}%**.")
+    if len(lines) == 0:
+        lines.append("- No historical evidence was available in the supplied analysis.")
+
+    lines += ["", "### Overall Assessment"]
+    lines.append(
+        f"Project **{project_id}** currently presents a **{risk_level}** risk profile. "
+        "Management should validate the model indicators against the latest project records and prioritize the highest-risk schedule and financial issues."
+    )
+
+    return "\n".join(lines)
+
+
 @lru_cache(maxsize=128)
 def _build_analysis_from_project_id(project_id):
     project = get_project_by_id(project_id)
@@ -1450,36 +1631,30 @@ def project_assistant_api(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        result = ask_project_assistant(
-            question=message,
-            analysis=analysis,
-            projects=projects,
-        )
+        try:
+            result = ask_project_assistant(
+                question=message,
+                analysis=analysis,
+                projects=projects,
+            )
+            answer = result["answer"]
+        except (AssistantConfigurationError, AssistantProviderError):
+            # Permanent resilience: Gemini is used whenever available, but an
+            # external LLM outage/quota/rate-limit must not break the API.
+            # Generate a deterministic answer from the already-computed ML
+            # analysis instead. No provider/model details are exposed.
+            answer = _build_local_project_assistant_answer(
+                analysis=analysis,
+                project=project if "project" in locals() else None,
+            )
 
         return Response(
             {
                 "question": message.strip(),
-                "answer": result["answer"],
+                "answer": answer,
                 "project_id": project_id,
             },
             status=status.HTTP_200_OK,
-        )
-
-    except AssistantConfigurationError as exc:
-        return Response(
-            {
-                "error": str(exc),
-                "code": "LLM_NOT_CONFIGURED",
-            },
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-    except AssistantProviderError as exc:
-        return Response(
-            {
-                "error": str(exc),
-                "code": "LLM_PROVIDER_ERROR",
-            },
-            status=status.HTTP_502_BAD_GATEWAY,
         )
     except ValueError as exc:
         return Response(
