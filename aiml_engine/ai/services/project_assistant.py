@@ -9,7 +9,6 @@ import httpx
 DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
 DEFAULT_GEMINI_FALLBACK_MODELS = [
     "gemini-3.6-flash",
-    "gemini-2.5-flash",
 ]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
