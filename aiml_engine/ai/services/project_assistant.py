@@ -6,9 +6,10 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 
-DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 DEFAULT_GEMINI_FALLBACK_MODELS = [
-    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
 ]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
@@ -229,23 +230,44 @@ IMPORTANT RESPONSE-FORMATTING RULES:
             if response is not None and response.status_code < 400:
                 try:
                     data = response.json()
-                    candidate = data["candidates"][0]
-                    finish_reason = candidate.get("finishReason", "STOP")
-                    parts = candidate["content"]["parts"]
-                    answer = "".join(
-                        part.get("text", "")
-                        for part in parts
-                        if part.get("text")
-                    ).strip()
+                    candidates = data.get("candidates") or []
 
-                    # A non-STOP finish can produce an incomplete answer.
-                    # Retry it instead of returning a cut-off sentence to the client.
-                    if finish_reason != "STOP":
-                        last_error = AssistantProviderError(
-                            f"Gemini returned an incomplete response (finishReason={finish_reason})."
-                        )
+                    # Gemini can return no candidates when the prompt is blocked.
+                    # Preserve the provider's actual reason so debugging is possible.
+                    if not candidates:
+                        prompt_feedback = data.get("promptFeedback") or data.get("prompt_feedback") or {}
+                        block_reason = prompt_feedback.get("blockReason") or prompt_feedback.get("block_reason")
+                        safety_ratings = prompt_feedback.get("safetyRatings") or []
+                        if block_reason:
+                            last_error = AssistantProviderError(
+                                f"Gemini blocked the request (blockReason={block_reason})."
+                            )
+                        else:
+                            last_error = AssistantProviderError(
+                                "Gemini returned no candidates. "
+                                f"promptFeedback={prompt_feedback!r}"
+                            )
                         answer = ""
-                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    else:
+                        candidate = candidates[0] or {}
+                        content = candidate.get("content") or {}
+                        parts = content.get("parts") or []
+                        answer = "".join(
+                            part.get("text", "")
+                            for part in parts
+                            if isinstance(part, dict) and part.get("text")
+                        ).strip()
+
+                        # Do not discard useful text merely because Gemini stopped for
+                        # a reason other than STOP. If text exists, return it.
+                        if not answer:
+                            finish_reason = candidate.get("finishReason", "UNKNOWN")
+                            finish_message = candidate.get("finishMessage", "")
+                            last_error = AssistantProviderError(
+                                "Gemini returned no answer text "
+                                f"(finishReason={finish_reason}, finishMessage={finish_message!r})."
+                            )
+                except (TypeError, ValueError) as exc:
                     last_error = exc
                     answer = ""
 
@@ -254,9 +276,9 @@ IMPORTANT RESPONSE-FORMATTING RULES:
                         "answer": answer,
                     }
 
-                last_error = AssistantProviderError(
-                    "The LLM provider returned an empty or unexpected answer."
-                )
+                # Try another configured Gemini model after an unexpected/empty response.
+                # This keeps the assistant on Gemini without exposing provider/model
+                # metadata in the public API response.
 
             # Try the next configured model after transient failures.
             if model_index < len(models) - 1:
