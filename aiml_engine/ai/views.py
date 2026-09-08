@@ -6,6 +6,12 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .authentication import AIMLAPIKeyAuthentication
+from aiml_engine.ai.services.project_recommendation import (
+    generate_project_recommendations,
+)
+from aiml_engine.ai.services.early_warning import (
+    generate_early_warning,
+)
 
 from aiml_engine.ai.services.prediction_service import (
     predict_project,
