@@ -1756,15 +1756,15 @@ def _build_lightweight_assistant_analysis(project):
 
 @lru_cache(maxsize=128)
 def _build_analysis_from_project_id(project_id):
+    """Reuse the existing full ML prediction for Project Assistant."""
     project = get_project_by_id(project_id)
 
     if project is None:
         return None, None
 
-    # IMPORTANT:
-    # Do not call predict_project() here.
-    # The normal /predict-project/ endpoint remains unchanged.
-    return project, _build_lightweight_assistant_analysis(project)
+    result = predict_project(project)
+    result = _enrich_result_for_assistant(result, project)
+    return project, result
 
 
 @api_view(["POST"])
