@@ -1,10 +1,8 @@
 from rest_framework.decorators import (
-    renderer_classes,
     api_view,
     authentication_classes,
 )
 from rest_framework.response import Response
-from rest_framework.renderers import JSONRenderer
 from rest_framework import status
 
 from .authentication import AIMLAPIKeyAuthentication
@@ -1058,7 +1056,6 @@ def predict_new_project_api(request):
         )
 @api_view(["GET"])
 @authentication_classes([AIMLAPIKeyAuthentication])
-@renderer_classes([JSONRenderer])
 def early_warning_api(request):
 
     project_id = request.query_params.get(
@@ -1459,8 +1456,6 @@ def project_assistant_api(request):
             {
                 "question": message.strip(),
                 "answer": result["answer"],
-                "provider": result["provider"],
-                "model": result["model"],
                 "project_id": project_id,
             },
             status=status.HTTP_200_OK,

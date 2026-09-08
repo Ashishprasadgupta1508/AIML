@@ -253,8 +253,6 @@ IMPORTANT RESPONSE-FORMATTING RULES:
                 if answer:
                     return {
                         "answer": answer,
-                        "provider": "gemini",
-                        "model": current_model,
                     }
 
                 last_error = AssistantProviderError(
