@@ -29,6 +29,11 @@ from aiml_engine.ai.services.risk_engine import calculate_risk
 
 from aiml_engine.ai.embedding_service import generate_embedding
 from aiml_engine.ai.services.project_reader import get_project_by_id
+from aiml_engine.ai.services.project_assistant import (
+    ask_project_assistant,
+    AssistantConfigurationError,
+    AssistantProviderError,
+)
 
 
 # =========================================================
@@ -1312,5 +1317,177 @@ def project_benchmarking_api(request):
                 "error":
                     "Benchmarking generation failed."
             },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+# =========================================================
+# PROJECT INTELLIGENCE ASSISTANT
+# =========================================================
+# POST /api/aiml/project-assistant/
+#
+# Supported modes:
+# 1. project_id + message -> backend generates current AI/ML analysis.
+# 2. analysis + message -> reuse an existing analysis response.
+# 3. projects + message -> compare supplied project analyses.
+# =========================================================
+
+def _enrich_result_for_assistant(result, project):
+    """Add the existing cost-escalation analysis to assistant context."""
+    if not isinstance(result, dict):
+        return result
+
+    cost_result = result.get("cost_prediction")
+    if not isinstance(cost_result, dict):
+        return result
+
+    if "cost_escalation_analysis" in cost_result:
+        return result
+
+    historical_projects = cost_result.get("historical_projects") or []
+    historical_overruns = [
+        item.get("cost_overrun_percent")
+        for item in historical_projects
+        if isinstance(item, dict)
+        and item.get("cost_overrun_percent") is not None
+    ]
+
+    try:
+        historical_average_overrun = (
+            sum(float(value) for value in historical_overruns)
+            / len(historical_overruns)
+            if historical_overruns
+            else None
+        )
+    except (TypeError, ValueError):
+        historical_average_overrun = None
+
+    enriched_cost = dict(cost_result)
+    enriched_cost["cost_escalation_analysis"] = _build_cost_escalation_analysis(
+        project=project,
+        predicted_overrun=cost_result.get("predicted_cost_overrun_percent"),
+        spread=cost_result.get("historical_spread_percent"),
+        average_similarity=cost_result.get("average_similarity", 0.0),
+        historical_average_overrun=historical_average_overrun,
+        confidence=cost_result.get("confidence", "LOW"),
+    )
+
+    enriched_result = dict(result)
+    enriched_result["cost_prediction"] = enriched_cost
+    return enriched_result
+
+
+def _build_analysis_from_project_id(project_id):
+    project = get_project_by_id(project_id)
+    if project is None:
+        return None, None
+
+    result = predict_project(project)
+    result = _enrich_result_for_assistant(result, project)
+    return project, result
+
+
+@api_view(["POST"])
+@authentication_classes([AIMLAPIKeyAuthentication])
+def project_assistant_api(request):
+    body = request.data if isinstance(request.data, dict) else {}
+    message = body.get("message") or body.get("question")
+
+    if not isinstance(message, str) or not message.strip():
+        return Response(
+            {"error": "message is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        analysis = body.get("analysis")
+        projects = body.get("projects")
+        project_id = body.get("project_id")
+
+        if project_id not in (None, ""):
+            try:
+                project_id = int(project_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "project_id must be a valid integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            project, generated_analysis = _build_analysis_from_project_id(project_id)
+            if project is None:
+                return Response(
+                    {
+                        "error": "Project not found.",
+                        "project_id": project_id,
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            analysis = generated_analysis
+
+        if analysis is not None and not isinstance(analysis, dict):
+            return Response(
+                {"error": "analysis must be a JSON object."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if projects is not None and not isinstance(projects, list):
+            return Response(
+                {"error": "projects must be a JSON array."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if analysis is None and not projects:
+            return Response(
+                {
+                    "error": (
+                        "Provide project_id, analysis, or projects as context."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = ask_project_assistant(
+            question=message,
+            analysis=analysis,
+            projects=projects,
+        )
+
+        return Response(
+            {
+                "question": message.strip(),
+                "answer": result["answer"],
+                "provider": result["provider"],
+                "model": result["model"],
+                "project_id": project_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except AssistantConfigurationError as exc:
+        return Response(
+            {
+                "error": str(exc),
+                "code": "LLM_NOT_CONFIGURED",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except AssistantProviderError as exc:
+        return Response(
+            {
+                "error": str(exc),
+                "code": "LLM_PROVIDER_ERROR",
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except ValueError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return Response(
+            {"error": "Project assistant failed."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )

@@ -36,4 +36,9 @@ path(
     views.project_benchmarking_api,
     name="project-benchmarking",
 ),
+path(
+    "project-assistant/",
+    views.project_assistant_api,
+    name="project-assistant",
+),
 ]
