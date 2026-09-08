@@ -31,4 +31,9 @@ path(
     views.project_recommendation_api,
     name="project-recommendation",
 ),
+path(
+    "project-benchmarking/",
+    views.project_benchmarking_api,
+    name="project-benchmarking",
+),
 ]

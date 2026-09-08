@@ -12,6 +12,9 @@ from aiml_engine.ai.services.project_recommendation import (
 from aiml_engine.ai.services.early_warning import (
     generate_early_warning,
 )
+from aiml_engine.ai.services.benchmarking import (
+    generate_benchmarking,
+)
 
 from aiml_engine.ai.services.prediction_service import (
     predict_project,
@@ -970,4 +973,105 @@ def project_recommendation_api(request):
                 "details": str(exc),
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+@api_view(["GET"])
+@authentication_classes([AIMLAPIKeyAuthentication])
+def project_benchmarking_api(request):
+
+    project_id = request.query_params.get(
+        "project_id"
+    )
+
+    if not project_id:
+        return Response(
+            {
+                "error": "project_id is required."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        project_id = int(project_id)
+
+    except (TypeError, ValueError):
+        return Response(
+            {
+                "error":
+                    "project_id must be a valid integer."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+
+        project = get_project_by_id(
+            project_id
+        )
+
+        if project is None:
+            return Response(
+                {
+                    "error": "Project not found.",
+                    "project_id": project_id,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Build exactly the same project text
+        project_text = _build_project_text(
+            project
+        )
+
+        # Generate embedding only for this
+        # separate analytics endpoint.
+        embedding = generate_embedding(
+            project_text
+        )
+
+        # Existing historical retrieval.
+        # READ ONLY.
+        completed_similar_projects = (
+            retrieve_completed_similar_projects(
+                project,
+                embedding,
+                limit=50,
+            )
+        )
+
+        benchmarking = generate_benchmarking(
+            project=project,
+            completed_similar_projects=(
+                completed_similar_projects
+            ),
+        )
+
+        return Response(
+            {
+                "project_id": project_id,
+                "benchmarking": benchmarking,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except ValueError as exc:
+
+        return Response(
+            {
+                "error": str(exc)
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    except Exception:
+
+        import traceback
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "error":
+                    "Benchmarking generation failed."
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
