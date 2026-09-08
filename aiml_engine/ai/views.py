@@ -23,7 +23,10 @@ from aiml_engine.ai.services.prediction_service import (
     retrieve_completed_similar_projects,
 )
 
-from aiml_engine.ai.services.cost_prediction import predict_cost
+from aiml_engine.ai.services.cost_prediction import (
+    predict_cost,
+    _build_cost_escalation_analysis,
+)
 from aiml_engine.ai.services.time_prediction import predict_time
 from aiml_engine.ai.services.risk_engine import calculate_risk
 
@@ -108,6 +111,38 @@ def predict_project_api(request):
 
     try:
         result = predict_project(project)
+
+        # -----------------------------------------------------
+        # COST ESCALATION DRIVER ANALYSIS
+        # -----------------------------------------------------
+        # Add this as a small, backward-compatible extension.
+        # Existing prediction fields are preserved.
+        # -----------------------------------------------------
+        cost_result = result.get("cost_prediction") if isinstance(result, dict) else None
+
+        if isinstance(cost_result, dict) and "cost_escalation_analysis" not in cost_result:
+            cost_result = dict(cost_result)
+            cost_result["cost_escalation_analysis"] = _build_cost_escalation_analysis(
+                project=project,
+                predicted_overrun=cost_result.get(
+                    "predicted_cost_overrun_percent"
+                ),
+                spread=cost_result.get(
+                    "historical_spread_percent"
+                ),
+                average_similarity=cost_result.get(
+                    "average_similarity",
+                    0.0,
+                ),
+                historical_average_overrun=None,
+                confidence=cost_result.get(
+                    "confidence",
+                    "LOW",
+                ),
+            )
+
+            result = dict(result)
+            result["cost_prediction"] = cost_result
 
         return Response(
             result,
@@ -634,6 +669,12 @@ def predict_new_project_api(request):
                     "warning": (
                         cost_result.get(
                             "warning"
+                        )
+                    ),
+
+                    "cost_escalation_analysis": (
+                        cost_result.get(
+                            "cost_escalation_analysis"
                         )
                     ),
                 },
