@@ -156,6 +156,11 @@ def predict_project_api(request):
             result = dict(result)
             result["cost_prediction"] = cost_result
 
+        # Reuse the prediction result already computed by this request.
+        # This does not change the prediction response.
+        if isinstance(result, dict):
+            _cache_assistant_analysis(project_id, result)
+
         return Response(
             result,
             status=status.HTTP_200_OK
@@ -1558,213 +1563,40 @@ def _build_local_project_assistant_answer(analysis, project=None):
     return "\n".join(lines)
 
 
-def _build_lightweight_assistant_analysis(project):
-    """
-    Build lightweight project context for Project Assistant.
-
-    IMPORTANT:
-    - Does NOT call the expensive predict_project() ML pipeline.
-    - Does NOT generate embeddings.
-    - Does NOT retrieve historical projects.
-    - Does NOT change /predict-project/ behavior or output.
-    """
-
-    def _value(*names):
-        if isinstance(project, dict):
-            for name in names:
-                value = project.get(name)
-                if value not in (None, ""):
-                    return value
-        else:
-            for name in names:
-                value = getattr(project, name, None)
-                if value not in (None, ""):
-                    return value
-        return None
-
-    project_id = _value("project_id", "id")
-    project_name = _value("project_name", "name")
-    agency = _value("agency")
-    ministry = _value("ministry")
-    sector = _value("sector")
-    state = _value("state")
-    progress_status = _value("progress_status")
-    physical_progress = _value(
-        "physical_progress",
-        "physical_progress_percent",
-    )
-
-    original_cost = _value("original_cost")
-    revised_cost = _value("revised_cost")
-
-    planned_duration = _value(
-        "planned_duration_days",
-        "original_duration_days",
-    )
-
-    actual_duration = _value(
-        "actual_duration_days",
-        "duration_days",
-    )
-
-    def _float(value):
-        try:
-            if value in (None, ""):
-                return None
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    physical_progress = _float(physical_progress)
-    original_cost = _float(original_cost)
-    revised_cost = _float(revised_cost)
-    planned_duration = _float(planned_duration)
-    actual_duration = _float(actual_duration)
-
-    cost_overrun = None
-
-    if (
-        original_cost is not None
-        and original_cost > 0
-        and revised_cost is not None
-    ):
-        cost_overrun = (
-            (revised_cost - original_cost)
-            / original_cost
-        ) * 100
-
-    delay_days = None
-
-    if (
-        planned_duration is not None
-        and actual_duration is not None
-    ):
-        delay_days = actual_duration - planned_duration
-
-    risk_level = "LOW"
-    risk_score = None
-    detected_issues = []
-
-    if cost_overrun is not None:
-        if cost_overrun >= 25:
-            risk_level = "HIGH"
-            detected_issues.append("HIGH_COST_ESCALATION")
-        elif cost_overrun >= 10:
-            risk_level = "MEDIUM"
-            detected_issues.append("COST_ESCALATION")
-
-    if delay_days is not None and delay_days > 0:
-        if delay_days >= 180:
-            risk_level = "HIGH"
-            detected_issues.append("HIGH_TIME_DELAY")
-        elif delay_days >= 60:
-            if risk_level != "HIGH":
-                risk_level = "MEDIUM"
-            detected_issues.append("TIME_DELAY")
-
-    recommended_solution = (
-        "Review the latest project records and validate schedule "
-        "and financial indicators against the approved project baseline."
-    )
-
-    if "HIGH_TIME_DELAY" in detected_issues:
-        recommended_solution = (
-            "Investigate the causes of schedule delay, verify pending "
-            "milestones, and validate the current completion status "
-            "against the approved project baseline."
-        )
-    elif "HIGH_COST_ESCALATION" in detected_issues:
-        recommended_solution = (
-            "Review the causes of cost escalation, reconcile expenditure "
-            "against the approved budget, and validate revised financial "
-            "assumptions."
-        )
-
-    escalation = {}
-
-    if cost_overrun is not None and cost_overrun > 0:
-        escalation = {
-            "code": "REVISED_COST_PRESSURE",
-            "explanation": (
-                f"The revised project cost is approximately "
-                f"{cost_overrun:.1f}% above the original cost."
-            ),
-            "impact": "HIGH" if cost_overrun >= 25 else "MODERATE",
-        }
-
-    return {
-        "project": {
-            "project_id": project_id,
-            "project_name": project_name,
-            "agency": agency,
-            "ministry": ministry,
-            "sector": sector,
-            "state": state,
-            "progress_status": progress_status,
-            "physical_progress": physical_progress,
-            "original_cost": original_cost,
-            "revised_cost": revised_cost,
-        },
-        "cost_prediction": {
-            "predicted_final_cost": revised_cost,
-            "predicted_cost_overrun_percent": cost_overrun,
-            "expected_cost_range": {},
-            "confidence": "N/A",
-            "historical_projects_used": 0,
-            "historical_projects_found": 0,
-            "average_similarity": None,
-            "historical_spread_percent": None,
-            "warning": (
-                "Lightweight assistant context is being used. "
-                "For full ML prediction evidence, use the "
-                "/predict-project/ endpoint and pass its result "
-                "as the analysis field."
-            ),
-            "cost_escalation_analysis": escalation,
-        },
-        "time_prediction": {
-            "predicted_delay_days": delay_days,
-            "expected_delay_range": {},
-            "planned_duration_days": planned_duration,
-            "ml_predicted_delay_days": None,
-            "historical_predicted_delay_days": None,
-            "historical_projects_used": 0,
-            "average_similarity": None,
-            "confidence": "N/A",
-            "warning": (
-                "Detailed ML schedule prediction is not recalculated "
-                "inside Project Assistant."
-            ),
-        },
-        "risk": {
-            "risk_level": risk_level,
-            "risk_score": risk_score,
-            "issue_id": (
-                detected_issues[0]
-                if detected_issues
-                else "NO_MAJOR_ISSUE_DETECTED"
-            ),
-            "reason": (
-                "Risk context was derived from the current project "
-                "records without rerunning the expensive ML pipeline."
-            ),
-            "recommended_solution": recommended_solution,
-            "detected_issues": detected_issues,
-        },
-    }
+@lru_cache(maxsize=256)
+def _get_assistant_project_context(project_id):
+    """Cheap project lookup. Never run full ML inference here."""
+    return get_project_by_id(project_id)
 
 
-@lru_cache(maxsize=128)
+_ASSISTANT_ANALYSIS_CACHE = {}
+_ASSISTANT_ANALYSIS_CACHE_MAX = 128
+
+
+def _cache_assistant_analysis(project_id, analysis):
+    """Store an already-computed prediction result for assistant reuse."""
+    if not isinstance(analysis, dict):
+        return
+
+    if len(_ASSISTANT_ANALYSIS_CACHE) >= _ASSISTANT_ANALYSIS_CACHE_MAX:
+        oldest_key = next(iter(_ASSISTANT_ANALYSIS_CACHE), None)
+        if oldest_key is not None:
+            _ASSISTANT_ANALYSIS_CACHE.pop(oldest_key, None)
+
+    _ASSISTANT_ANALYSIS_CACHE[project_id] = analysis
+
+
+def _get_cached_assistant_analysis(project_id):
+    return _ASSISTANT_ANALYSIS_CACHE.get(project_id)
+
+
 def _build_analysis_from_project_id(project_id):
-    project = get_project_by_id(project_id)
-
+    """Cheap assistant context only; never invoke predict_project()."""
+    project = _get_assistant_project_context(project_id)
     if project is None:
         return None, None
 
-    # IMPORTANT:
-    # Do not call predict_project() here.
-    # The normal /predict-project/ endpoint remains unchanged.
-    return project, _build_lightweight_assistant_analysis(project)
+    return project, _get_cached_assistant_analysis(project_id)
 
 
 @api_view(["POST"])
@@ -1803,7 +1635,9 @@ def project_assistant_api(request):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            analysis = generated_analysis
+            # Explicit analysis always wins; otherwise reuse cached ML output.
+            if analysis is None and generated_analysis is not None:
+                analysis = generated_analysis
 
         if analysis is not None and not isinstance(analysis, dict):
             return Response(
@@ -1816,6 +1650,14 @@ def project_assistant_api(request):
                 {"error": "projects must be a JSON array."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if analysis is None and not projects and project is not None:
+            # No cached prediction yet: use only the current project record.
+            # Crucially, do not trigger the expensive ML pipeline.
+            analysis = {
+                "project": project,
+                "source": "current_project_record_only",
+            }
 
         if analysis is None and not projects:
             return Response(
