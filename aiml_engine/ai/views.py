@@ -1672,18 +1672,38 @@ def project_assistant_api(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Fast path: common risk/action questions are answered directly from
+        # the existing ML analysis. This avoids an unnecessary LLM round-trip
+        # and keeps the common Project Assistant path sub-5-second.
+        normalized_message = message.strip().lower()
+        fast_keywords = (
+            "risk", "action", "recommend", "recommendation",
+            "what should be done", "what should we do",
+            "next step", "next steps", "delay", "cost overrun",
+        )
+        use_fast_path = bool(analysis) and any(k in normalized_message for k in fast_keywords)
+
         try:
-            result = ask_project_assistant(
-                question=message,
-                analysis=analysis,
-                projects=projects,
-            )
-            answer = result["answer"]
+            if use_fast_path:
+                answer = _build_local_project_assistant_answer(
+                    analysis=analysis,
+                    project=project if "project" in locals() else None,
+                )
+            else:
+                result = ask_project_assistant(
+                    question=message,
+                    analysis=analysis,
+                    projects=projects,
+                )
+                answer = result["answer"]
         except (AssistantConfigurationError, AssistantProviderError):
-            # Permanent resilience: Gemini is used whenever available, but an
-            # external LLM outage/quota/rate-limit must not break the API.
-            # Generate a deterministic answer from the already-computed ML
-            # analysis instead. No provider/model details are exposed.
+            answer = _build_local_project_assistant_answer(
+                analysis=analysis,
+                project=project if "project" in locals() else None,
+            )
+        except Exception:
+            # Never let formatting/provider edge cases turn the assistant into
+            # a 500. Return a deterministic answer from available ML data.
             answer = _build_local_project_assistant_answer(
                 analysis=analysis,
                 project=project if "project" in locals() else None,

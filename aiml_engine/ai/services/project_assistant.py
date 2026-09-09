@@ -63,7 +63,7 @@ def _get_http_client():
             if _HTTP_CLIENT is None:
                 _HTTP_CLIENT = httpx.Client(
                     http2=True,
-                    timeout=httpx.Timeout(connect=1.2, read=2.6, write=1.2, pool=0.8),
+                    timeout=httpx.Timeout(connect=0.8, read=1.8, write=0.8, pool=0.5),
                     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
                 )
     return _HTTP_CLIENT
@@ -86,7 +86,7 @@ def ask_project_assistant(question: str, analysis: Optional[Dict[str, Any]] = No
     payload = {
         "system_instruction": {"parts": [{"text": _SYSTEM}]},
         "contents": [{"role": "user", "parts": [{"text": build_assistant_context(question, analysis, projects)}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 450},
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300},
     }
     try:
         response = _get_http_client().post(
