@@ -3,6 +3,7 @@ from rest_framework.decorators import (
     authentication_classes,
 )
 from functools import lru_cache
+import time
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -1571,24 +1572,26 @@ def _get_assistant_project_context(project_id):
 
 _ASSISTANT_ANALYSIS_CACHE = {}
 _ASSISTANT_ANALYSIS_CACHE_MAX = 128
-
+_ASSISTANT_ANALYSIS_CACHE_TTL = 300
 
 def _cache_assistant_analysis(project_id, analysis):
-    """Store an already-computed prediction result for assistant reuse."""
     if not isinstance(analysis, dict):
         return
-
     if len(_ASSISTANT_ANALYSIS_CACHE) >= _ASSISTANT_ANALYSIS_CACHE_MAX:
         oldest_key = next(iter(_ASSISTANT_ANALYSIS_CACHE), None)
         if oldest_key is not None:
             _ASSISTANT_ANALYSIS_CACHE.pop(oldest_key, None)
-
-    _ASSISTANT_ANALYSIS_CACHE[project_id] = analysis
-
+    _ASSISTANT_ANALYSIS_CACHE[project_id] = (time.monotonic(), analysis)
 
 def _get_cached_assistant_analysis(project_id):
-    return _ASSISTANT_ANALYSIS_CACHE.get(project_id)
-
+    item = _ASSISTANT_ANALYSIS_CACHE.get(project_id)
+    if not item:
+        return None
+    created, analysis = item
+    if time.monotonic() - created > _ASSISTANT_ANALYSIS_CACHE_TTL:
+        _ASSISTANT_ANALYSIS_CACHE.pop(project_id, None)
+        return None
+    return analysis
 
 def _build_analysis_from_project_id(project_id):
     """Cheap assistant context only; never invoke predict_project()."""
