@@ -69,7 +69,7 @@ def _get_http_client():
         with _HTTP_CLIENT_LOCK:
             if _HTTP_CLIENT is None:
                 _HTTP_CLIENT = httpx.Client(
-                    http2=True,
+                    http2=False,
                     timeout=httpx.Timeout(connect=1.0, read=8.0, write=1.0, pool=1.0),
                     limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                 )
