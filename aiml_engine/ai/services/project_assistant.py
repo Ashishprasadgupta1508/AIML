@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
-FALLBACK_GEMINI_MODELS = ("gemini-3.6-flash", "gemini-3.5-flash-lite")
+FALLBACK_GEMINI_MODELS = ("gemini-3.7-flash",)
 GEMINI_RETRYABLE_STATUS_CODES = {408, 500, 502, 503, 504}
 GEMINI_MAX_RETRIES_PER_MODEL = 1
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -65,6 +65,7 @@ def build_assistant_context(
     question: str,
     analysis: Optional[Dict[str, Any]] = None,
     projects: Optional[List[Dict[str, Any]]] = None,
+    project: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a factual context packet. Never invents missing analysis."""
     a = analysis if isinstance(analysis, dict) else {}
@@ -72,6 +73,7 @@ def build_assistant_context(
     # can be answered. Large lists/text are compacted rather than discarded.
     payload = {
         "user_question": question[:2000],
+        "project_record": _compact(project or a.get("project") or {}, max_chars=1800),
         "project_analysis": _compact(a, max_chars=1800),
         "comparison_projects": _compact((projects or [])[:5], 1200),
     }
@@ -101,7 +103,7 @@ def _get_http_client():
                 _HTTP_CLIENT = httpx.Client(
                     http2=False,
                     trust_env=False,
-                    timeout=httpx.Timeout(connect=2.0, read=20.0, write=2.0, pool=2.0),
+                    timeout=httpx.Timeout(connect=2.0, read=18.0, write=2.0, pool=2.0),
                     limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                 )
     return _HTTP_CLIENT
@@ -209,7 +211,9 @@ def _generate(
         },
     }
 
-    last_exc = None
+    # Timeouts are not retried: retrying an 18s read timeout can double the
+    # request latency. Transient HTTP 5xx responses get one short retry.
+    import time
 
     for attempt in range(GEMINI_MAX_RETRIES_PER_MODEL + 1):
         try:
@@ -221,24 +225,31 @@ def _generate(
                 },
                 json=payload,
             )
+        except httpx.ReadTimeout as exc:
+            print(
+                f"[PROJECT_ASSISTANT] Gemini read timeout "
+                f"model={model}: {exc}"
+            )
+            raise AssistantProviderError(
+                f"Unable to reach the configured LLM provider (ReadTimeout)."
+            ) from exc
+        except httpx.ConnectTimeout as exc:
+            print(
+                f"[PROJECT_ASSISTANT] Gemini connect timeout "
+                f"model={model}: {exc}"
+            )
+            raise AssistantProviderError(
+                f"Unable to reach the configured LLM provider (ConnectTimeout)."
+            ) from exc
         except httpx.HTTPError as exc:
-            last_exc = exc
             error_type = type(exc).__name__
             print(
                 f"[PROJECT_ASSISTANT] Gemini transport error "
-                f"model={model} attempt={attempt + 1}: {error_type}: {exc}"
+                f"model={model}: {error_type}: {exc}"
             )
-
-            # A timeout is retried once with a short delay. After that,
-            # the caller can move to the next stable Flash fallback.
-            if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
-                import time
-                time.sleep(0.8)
-                continue
-
             raise AssistantProviderError(
                 f"Unable to reach the configured LLM provider ({error_type})."
-            ) from last_exc
+            ) from exc
 
         if response.status_code >= 400:
             detail = _provider_error(response)
@@ -247,20 +258,18 @@ def _generate(
                 f"model={model} attempt={attempt + 1}: {detail}"
             )
 
-            # 429 is a quota/rate-limit signal. Retrying immediately or
-            # cycling through many models can make the situation worse.
-            if response.status_code == 429:
+            # Quota/auth errors should fail immediately.
+            if response.status_code in (401, 403, 429):
                 raise AssistantProviderError(
-                    f"LLM provider returned HTTP 429: {detail}"
+                    f"LLM provider returned HTTP {response.status_code}: {detail}"
                 )
 
-            # Retry only transient server-side errors such as 503.
+            # Retry only transient server-side errors once.
             if (
                 response.status_code in GEMINI_RETRYABLE_STATUS_CODES
                 and attempt < GEMINI_MAX_RETRIES_PER_MODEL
             ):
-                import time
-                time.sleep(0.8)
+                time.sleep(0.6)
                 continue
 
             raise AssistantProviderError(
@@ -276,7 +285,7 @@ def _generate(
 
         return _extract_answer(data)
 
-    raise AssistantProviderError("Gemini request failed after retries.")
+    raise AssistantProviderError("Gemini request failed after retry.")
 
 
 def _fit_exact_word_count(text: str, count: int) -> str:
@@ -300,13 +309,14 @@ def ask_project_assistant(
     question: str,
     analysis: Optional[Dict[str, Any]] = None,
     projects: Optional[List[Dict[str, Any]]] = None,
+    project: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     question = (question or "").strip()
     if not question:
         raise ValueError("message is required.")
 
     api_key = _get_api_key()
-    context = build_assistant_context(question, analysis, projects)
+    context = build_assistant_context(question, analysis, projects, project)
     requested = _extract_requested_word_count(question)
 
     prompt = (

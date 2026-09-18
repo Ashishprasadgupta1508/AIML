@@ -1788,6 +1788,7 @@ def project_assistant_api(request):
             question=message,
             analysis=analysis,
             projects=projects,
+            project=project,
         )
 
         return Response(
