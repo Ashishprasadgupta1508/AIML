@@ -209,6 +209,7 @@ def _generate(
     model: str,
     api_key: str,
     max_tokens: int,
+    reasoning_enabled: bool = True,
 ) -> str:
     payload = {
         "model": model,
@@ -223,7 +224,7 @@ def _generate(
             },
         ],
         "reasoning": {
-            "enabled": True,
+            "enabled": reasoning_enabled,
         },
         "max_tokens": min(max_tokens, 384),
         "temperature": 0.2,
@@ -345,12 +346,20 @@ def ask_project_assistant(
         + context
     )
 
+    # Keep the normal/general-answer path unchanged. Exact word-count requests
+    # are isolated so the word-count fix cannot change reasoning/output behavior
+    # for ordinary project questions.
     answer = _generate(
         prompt=prompt,
         system_instruction=_SYSTEM,
         model=model,
         api_key=api_key,
-        max_tokens=max(220, min((requested or 120) * 3, 384)),
+        max_tokens=(
+            max(128, min(requested * 8, 256))
+            if requested is not None
+            else max(220, min((requested or 120) * 3, 384))
+        ),
+        reasoning_enabled=(False if requested is not None else True),
     )
 
     if requested is not None and len(answer.split()) != requested:
@@ -374,7 +383,8 @@ def ask_project_assistant(
                 ),
                 model=model,
                 api_key=api_key,
-                max_tokens=max(80, requested * 3),
+                max_tokens=max(128, min(requested * 8, 256)),
+                reasoning_enabled=False,
             )
             if len(repaired.split()) == requested:
                 answer = repaired
