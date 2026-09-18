@@ -6,8 +6,10 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
-FALLBACK_GEMINI_MODELS = ("gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash")
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+FALLBACK_GEMINI_MODELS = ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite")
+GEMINI_RETRYABLE_STATUS_CODES = {408, 500, 502, 503, 504}
+GEMINI_MAX_RETRIES_PER_MODEL = 1
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
@@ -99,7 +101,7 @@ def _get_http_client():
                 _HTTP_CLIENT = httpx.Client(
                     http2=False,
                     trust_env=False,
-                    timeout=httpx.Timeout(connect=2.0, read=15.0, write=2.0, pool=2.0),
+                    timeout=httpx.Timeout(connect=2.0, read=10.0, write=2.0, pool=2.0),
                     limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                 )
     return _HTTP_CLIENT
@@ -192,7 +194,13 @@ def _provider_error(response: httpx.Response) -> str:
     return response.text[:500] or f"HTTP {response.status_code}"
 
 
-def _generate(prompt: str, system_instruction: str, model: str, api_key: str, max_tokens: int) -> str:
+def _generate(
+    prompt: str,
+    system_instruction: str,
+    model: str,
+    api_key: str,
+    max_tokens: int,
+) -> str:
     payload = {
         "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -200,33 +208,75 @@ def _generate(prompt: str, system_instruction: str, model: str, api_key: str, ma
             "maxOutputTokens": max_tokens,
         },
     }
-    try:
-        response = _get_http_client().post(
-            GEMINI_API_URL.format(model=model),
-            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-            json=payload,
-        )
-    except httpx.HTTPError as exc:
-        error_type = type(exc).__name__
-        print(
-            f"[PROJECT_ASSISTANT] Gemini transport error "
-            f"model={model} type={error_type}: {exc}"
-        )
-        raise AssistantProviderError(
-            f"Unable to reach the configured LLM provider ({error_type})."
-        ) from exc
 
-    if response.status_code >= 400:
-        detail = _provider_error(response)
-        print(f"[PROJECT_ASSISTANT] Gemini HTTP {response.status_code} model={model}: {detail}")
-        raise AssistantProviderError(
-            f"LLM provider returned HTTP {response.status_code}: {detail}"
-        )
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise AssistantProviderError("The LLM provider returned invalid JSON.") from exc
-    return _extract_answer(data)
+    last_exc = None
+
+    for attempt in range(GEMINI_MAX_RETRIES_PER_MODEL + 1):
+        try:
+            response = _get_http_client().post(
+                GEMINI_API_URL.format(model=model),
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            error_type = type(exc).__name__
+            print(
+                f"[PROJECT_ASSISTANT] Gemini transport error "
+                f"model={model} attempt={attempt + 1}: {error_type}: {exc}"
+            )
+
+            # A timeout is retried once with a short delay. After that,
+            # the caller can move to the next stable Flash fallback.
+            if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
+                import time
+                time.sleep(0.8)
+                continue
+
+            raise AssistantProviderError(
+                f"Unable to reach the configured LLM provider ({error_type})."
+            ) from last_exc
+
+        if response.status_code >= 400:
+            detail = _provider_error(response)
+            print(
+                f"[PROJECT_ASSISTANT] Gemini HTTP {response.status_code} "
+                f"model={model} attempt={attempt + 1}: {detail}"
+            )
+
+            # 429 is a quota/rate-limit signal. Retrying immediately or
+            # cycling through many models can make the situation worse.
+            if response.status_code == 429:
+                raise AssistantProviderError(
+                    f"LLM provider returned HTTP 429: {detail}"
+                )
+
+            # Retry only transient server-side errors such as 503.
+            if (
+                response.status_code in GEMINI_RETRYABLE_STATUS_CODES
+                and attempt < GEMINI_MAX_RETRIES_PER_MODEL
+            ):
+                import time
+                time.sleep(0.8)
+                continue
+
+            raise AssistantProviderError(
+                f"LLM provider returned HTTP {response.status_code}: {detail}"
+            )
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise AssistantProviderError(
+                "The LLM provider returned invalid JSON."
+            ) from exc
+
+        return _extract_answer(data)
+
+    raise AssistantProviderError("Gemini request failed after retries.")
 
 
 def _fit_exact_word_count(text: str, count: int) -> str:
@@ -291,25 +341,18 @@ def ask_project_assistant(
                 f"{type(exc).__name__}: {exc}"
             )
 
-            # A timeout/network failure affects the Gemini endpoint itself.
-            # Trying three more models against the same endpoint only adds
-            # latency, so fail fast. Keep model fallback for HTTP/provider
-            # errors such as an unavailable model.
             message = str(exc).lower()
-            transport_failure = any(
-                marker in message
-                for marker in (
-                    "unable to reach the configured llm provider",
-                    "timeout",
-                    "timed out",
-                    "connecterror",
-                    "network",
-                )
-            )
-            if transport_failure:
+
+            # Quota/auth/configuration errors should not be hidden by
+            # cycling through more models. Return the provider error quickly.
+            if "http 429" in message or "http 401" in message or "http 403" in message:
                 raise AssistantProviderError(
-                    f"Gemini transport failure on {model}: {exc}"
+                    f"Gemini provider error on {model}: {exc}"
                 ) from exc
+
+            # For transient 5xx errors and timeouts, move to the next
+            # stable fallback after _generate has already performed one
+            # short retry. This avoids the old 15s timeout + long model chain.
             continue
 
     if answer is None:
