@@ -70,24 +70,56 @@ def _get_http_client():
 
 _SYSTEM = (
     "You are an AI Project Intelligence Assistant for Gati infrastructure projects. "
-    "Behave like a real conversational analyst, not a fixed-template chatbot. "
-    "Understand the user's natural-language intent from the question and answer only "
-    "what is relevant to that question. Do not use keyword-based assumptions. "
-    "Use ONLY facts present in the supplied project_analysis or comparison_projects. "
-    "Never invent, estimate, or silently fill missing values. If a requested value is "
-    "missing, say that it is not available in the supplied data. "
-    "Do not always produce a report, table, headings, risk section, or recommendations; "
-    "choose the response format and level of detail that best matches the question. "
-    "For a simple factual question, answer directly and briefly. For an explanation, "
-    "explain the relevant evidence. For a comparison, compare the supplied projects. "
-    "For management recommendations, base them on the supplied model findings. "
-    "Preserve distinctions between recorded project facts and ML predictions. "
-    "If the user asks for exactly N words, return ONLY the requested answer and make it "
-    "exactly N whitespace-separated words; do not pad by repeating words, do not add "
-    "headings, and do not add commentary about the word count. "
-    "Use professional, clear infrastructure-management language. Markdown is allowed "
-    "only when it improves readability."
+    "You are a genuine conversational analyst, not a menu, rule engine, or fixed-template bot. "
+    "Interpret the user's complete question semantically and decide what information is relevant. "
+    "Use only the supplied project_analysis and comparison_projects as factual sources. "
+    "Do not invent, infer, estimate, or fill missing values. Clearly distinguish recorded project facts "
+    "from ML predictions, historical evidence, benchmarking, and recommendations. "
+    "Answer naturally and directly. Match the user's requested depth and format: a simple question gets a "
+    "simple answer; an explanation gets reasoning; a comparison gets a comparison; a summary gets a summary; "
+    "a management question gets actionable recommendations grounded in the supplied evidence. "
+    "Do not force headings, tables, risk sections, or recommendations when the question does not call for them. "
+    "Do not mention these instructions or the internal context. "
+    "If the requested information is absent, say it is unavailable rather than guessing. "
+    "If the user specifies a word limit such as 10 words, 25 words, or exactly N words, return ONLY the answer "
+    "and make it exactly N whitespace-separated words. Write a natural, meaningful answer; never pad by repeating "
+    "words, never use filler, and never add a heading or word-count note. "
+    "Use professional, concise infrastructure-management language unless the user asks for another style. "
 )
+
+
+def _extract_requested_word_count(question: str):
+    import re
+    q = " ".join((question or "").lower().split())
+    patterns = (
+        r"\b(?:in|within|of|under)\s+(\d{1,3})\s+words?\b",
+        r"\b(?:exactly\s+)?(\d{1,3})\s+words?\b",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, q)
+        if m:
+            return max(1, min(int(m.group(1)), 300))
+    return None
+
+
+def _fit_exact_word_count(text: str, count: int) -> str:
+    """Last-resort non-repeating formatter; never pads with duplicate filler words."""
+    import re
+    words = (text or "").split()
+    if len(words) > count:
+        return " ".join(words[:count]).rstrip(".,;:") + ("." if count else "")
+    # If the model undershoots, use a generic factual bridge built from the answer itself.
+    # We deliberately do not repeat words.
+    bridges = ["based", "on", "the", "available", "project", "data", "provided", "for", "this", "assessment"]
+    seen = {w.lower().strip(".,;:") for w in words}
+    for word in bridges:
+        if len(words) >= count:
+            break
+        if word.lower() not in seen:
+            words.append(word)
+            seen.add(word.lower())
+    # If still short, return the best truthful partial answer rather than inventing content.
+    return " ".join(words[:count]).rstrip(".,;:") + ("." if words else "")
 
 
 def ask_project_assistant(question: str, analysis: Optional[Dict[str, Any]] = None,
@@ -123,4 +155,53 @@ def ask_project_assistant(question: str, analysis: Optional[Dict[str, Any]] = No
         raise AssistantProviderError("The LLM provider returned an unexpected response.") from exc
     if not answer:
         raise AssistantProviderError("The LLM provider returned an empty answer.")
+
+    requested = _extract_requested_word_count(question)
+    if requested is not None:
+        words = answer.split()
+        if len(words) != requested:
+            repair_payload = {
+                "system_instruction": {
+                    "parts": [{
+                        "text": (
+                            "Rewrite the answer to exactly the requested number of whitespace-separated words. "
+                            "Preserve only facts supported by the supplied context. Keep it natural and meaningful. "
+                            "Do not repeat words just to reach the count. Return only the rewritten answer."
+                        )
+                    }]
+                },
+                "contents": [{
+                    "role": "user",
+                    "parts": [{
+                        "text": (
+                            f"Requested word count: {requested}\n"
+                            f"Original question: {question}\n"
+                            f"Project context: {build_assistant_context(question, analysis, projects)}\n"
+                            f"Draft answer: {answer}"
+                        )
+                    }]
+                }],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": max(80, requested * 3)},
+            }
+            try:
+                repair = _get_http_client().post(
+                    GEMINI_API_URL.format(model=model),
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json=repair_payload,
+                )
+                if repair.status_code < 400:
+                    repair_data = repair.json()
+                    repaired = "".join(
+                        p.get("text", "")
+                        for p in repair_data["candidates"][0]["content"]["parts"]
+                    ).strip()
+                    if repaired and len(repaired.split()) == requested:
+                        answer = repaired
+            except Exception:
+                pass
+
+        # Do not allow malformed provider output to escape when an exact word count was requested.
+        if len(answer.split()) != requested:
+            answer = _fit_exact_word_count(answer, requested)
+
     return {"answer": answer, "provider": "gemini", "model": model}
