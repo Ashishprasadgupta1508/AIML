@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-FALLBACK_GEMINI_MODELS = ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite")
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+FALLBACK_GEMINI_MODELS = ("gemini-3.6-flash", "gemini-3.5-flash-lite")
 GEMINI_RETRYABLE_STATUS_CODES = {408, 500, 502, 503, 504}
 GEMINI_MAX_RETRIES_PER_MODEL = 1
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -101,7 +101,7 @@ def _get_http_client():
                 _HTTP_CLIENT = httpx.Client(
                     http2=False,
                     trust_env=False,
-                    timeout=httpx.Timeout(connect=2.0, read=10.0, write=2.0, pool=2.0),
+                    timeout=httpx.Timeout(connect=2.0, read=20.0, write=2.0, pool=2.0),
                     limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                 )
     return _HTTP_CLIENT
