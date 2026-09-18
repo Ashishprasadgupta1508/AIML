@@ -1564,6 +1564,212 @@ def _build_local_project_assistant_answer(analysis, project=None):
     return "\n".join(lines)
 
 
+# =========================================================
+# PROJECT ASSISTANT INTENT / FOCUSED ANSWERS
+# =========================================================
+
+def _assistant_project_value(project, *names):
+    if not isinstance(project, dict):
+        return None
+    for name in names:
+        value = project.get(name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _assistant_clean_words(text):
+    return [w for w in str(text).strip().split() if w]
+
+
+def _assistant_exact_word_summary(project, project_id, word_count):
+    """Return an exactly-N-whitespace-word summary without an LLM call."""
+    name = _assistant_project_value(project, "project_name", "name")
+    progress = _assistant_project_value(project, "physical_progress", "physical_progress_percent")
+
+    if progress not in (None, ""):
+        try:
+            progress_text = f"{float(progress):.1f}%"
+        except (TypeError, ValueError):
+            progress_text = str(progress)
+        words = _assistant_clean_words(
+            f"Project {project_id} is currently at {progress_text} physical progress requiring continued monitoring."
+        )
+    else:
+        words = _assistant_clean_words(
+            f"Project {project_id} is under active monitoring based on available records."
+        )
+
+    # Keep the answer exactly at the requested word count.
+    if len(words) > word_count:
+        words = words[:word_count]
+    while len(words) < word_count:
+        words.append("currently")
+
+    # Put terminal punctuation on the final word.
+    words[-1] = words[-1].rstrip(".,!?;:") + "."
+    return " ".join(words)
+
+
+def _assistant_intent(message):
+    q = " ".join(str(message).lower().strip().split())
+
+    # Explicit length requests take precedence over every other intent.
+    import re
+    m = re.search(r"\b(?:in|within|of|under)\s+(\d+)\s+words?\b", q)
+    if m:
+        return "word_summary", int(m.group(1))
+    m = re.search(r"\b(\d+)\s+words?\b", q)
+    if m and any(k in q for k in ("summary", "summarize", "summarise", "brief", "short", "tell")):
+        return "word_summary", int(m.group(1))
+
+    if any(k in q for k in (
+        "what is the project", "which project", "project name",
+        "tell me about the project", "about this project", "project details",
+    )) and "risk" not in q:
+        return "project_info", None
+
+    if any(k in q for k in ("risk", "risky", "risk level", "risk score", "why is.*risk")):
+        return "risk", None
+
+    if any(k in q for k in ("cost overrun", "predicted cost", "final cost", "project cost", "cost escalation", "cost pressure")):
+        return "cost", None
+
+    if any(k in q for k in ("delay", "schedule", "completion", "late", "duration")):
+        return "schedule", None
+
+    if any(k in q for k in ("what action", "what should be done", "what should we do", "recommend", "recommendation", "next step", "next steps")):
+        return "recommendation", None
+
+    if any(k in q for k in ("summary", "summarize", "summarise", "briefly", "short summary")):
+        return "summary", None
+
+    if any(k in q for k in ("benchmark", "compare", "comparison", "similar project", "historical")):
+        return "benchmarking", None
+
+    return "general", None
+
+
+def _build_project_info_answer(project, project_id):
+    name = _assistant_project_value(project, "project_name", "name") or "N/A"
+    progress = _assistant_project_value(project, "physical_progress", "physical_progress_percent")
+    lines = [
+        "## Project Information",
+        "",
+        f"**Project:** {name}",
+        f"**Project ID:** {project_id}",
+        "",
+        "### Current Status",
+    ]
+    if progress not in (None, ""):
+        try:
+            lines.append(f"- **Physical Progress:** {float(progress):.1f}%")
+        except (TypeError, ValueError):
+            lines.append(f"- **Physical Progress:** {progress}")
+
+    fields = [
+        ("Agency", ("agency",)),
+        ("Ministry", ("ministry",)),
+        ("Sector", ("sector",)),
+        ("State", ("state", "state_name")),
+        ("Start Date", ("start_date",)),
+        ("Original Completion Date", ("original_completion_date",)),
+        ("Revised Completion Date", ("revised_completion_date",)),
+    ]
+    details = []
+    for label, names in fields:
+        value = _assistant_project_value(project, *names)
+        if value not in (None, ""):
+            details.append(f"- **{label}:** {value}")
+    if details:
+        lines += ["", "### Project Details"] + details
+    lines += ["", "### Summary", f"Project **{project_id}** is currently at the recorded project status shown above."]
+    return "\n".join(lines)
+
+
+def _build_focused_project_assistant_answer(message, analysis, project, project_id):
+    """Answer common intents locally, using only supplied/cached project data."""
+    intent, arg = _assistant_intent(message)
+    analysis = analysis if isinstance(analysis, dict) else {}
+    project = project if isinstance(project, dict) else (analysis.get("project") or {})
+
+    if intent == "word_summary":
+        return _assistant_exact_word_summary(project, project_id, max(1, min(arg, 100)))
+
+    if intent == "project_info":
+        return _build_project_info_answer(project, project_id)
+
+    if intent == "summary":
+        name = _assistant_project_value(project, "project_name", "name") or "N/A"
+        progress = _assistant_project_value(project, "physical_progress", "physical_progress_percent")
+        if progress not in (None, ""):
+            try:
+                progress = f"{float(progress):.1f}%"
+            except (TypeError, ValueError):
+                pass
+            return f"**{name}** (Project ID: {project_id}) is at **{progress}** physical progress."
+        return f"**{name}** (Project ID: {project_id}) is available in the current project records."
+
+    if intent == "risk":
+        risk = analysis.get("risk") or {}
+        level = risk.get("risk_level") or "N/A"
+        score = risk.get("risk_score")
+        reason = risk.get("reason")
+        issues = risk.get("detected_issues") or []
+        lines = ["## Project Risk Assessment", "", f"**Project:** {_assistant_project_value(project, 'project_name', 'name') or 'N/A'}", f"**Project ID:** {project_id}", "", f"**Overall Risk:** **{level}**"]
+        if score is not None:
+            lines[-1] += f"  \n**Risk Score:** **{_fmt_number(score, 0)}/10**"
+        if reason:
+            lines += ["", "### Risk Reason", str(reason)]
+        if issues:
+            lines += ["", "### Detected Issues"] + [f"- **{x}**" for x in issues[:6]]
+        if not risk:
+            lines += ["", "### Data Availability", "A model-based risk assessment is not available in the current assistant context."]
+        return "\n".join(lines)
+
+    if intent == "cost":
+        cost = analysis.get("cost_prediction") or {}
+        lines = ["## Cost Assessment", ""]
+        lines.append(f"**Project:** {_assistant_project_value(project, 'project_name', 'name') or 'N/A'}")
+        if cost.get("predicted_final_cost") is not None:
+            lines.append(f"- **Predicted Final Cost:** {_fmt_currency(cost.get('predicted_final_cost'))}")
+        if cost.get("predicted_cost_overrun_percent") is not None:
+            lines.append(f"- **Predicted Cost Overrun:** {_fmt_number(cost.get('predicted_cost_overrun_percent'), 2)}%")
+        escalation = cost.get("cost_escalation_analysis") or {}
+        if escalation:
+            lines.append(f"- **Cost Escalation:** {escalation.get('explanation') or escalation.get('code', 'N/A')} ({escalation.get('impact', 'N/A')} impact)")
+        if len(lines) == 3:
+            lines += ["", "Cost prediction data is not available in the current assistant context."]
+        return "\n".join(lines)
+
+    if intent == "schedule":
+        td = analysis.get("time_prediction") or {}
+        lines = ["## Schedule Assessment", "", f"**Project ID:** {project_id}"]
+        if td.get("predicted_delay_days") is not None:
+            lines.append(f"- **Predicted Delay:** {_fmt_number(td.get('predicted_delay_days'), 1)} days")
+        if td.get("planned_duration_days") is not None:
+            lines.append(f"- **Planned Duration:** {_fmt_number(td.get('planned_duration_days'), 1)} days")
+        if td.get("confidence"):
+            lines.append(f"- **Confidence:** {td.get('confidence')}")
+        if len(lines) == 3:
+            lines += ["", "Schedule prediction data is not available in the current assistant context."]
+        return "\n".join(lines)
+
+    if intent == "recommendation":
+        risk = analysis.get("risk") or {}
+        recommended = risk.get("recommended_solution")
+        if recommended:
+            return "## Recommended Management Action\n\n" + str(recommended)
+        return "## Recommended Management Action\n\nRun the full project prediction analysis to obtain model-based recommendations."
+
+    if intent == "benchmarking":
+        if analysis.get("benchmarking"):
+            return "## Project Benchmarking\n\n" + str(analysis.get("benchmarking"))
+        return "## Project Benchmarking\n\nBenchmarking data is not available in the current assistant context."
+
+    return None
+
+
 @lru_cache(maxsize=256)
 def _get_assistant_project_context(project_id):
     """Cheap project lookup. Never run full ML inference here."""
@@ -1672,24 +1878,17 @@ def project_assistant_api(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Fast path: common risk/action questions are answered directly from
-        # the existing ML analysis. This avoids an unnecessary LLM round-trip
-        # and keeps the common Project Assistant path sub-5-second.
-        normalized_message = message.strip().lower()
-        fast_keywords = (
-            "risk", "action", "recommend", "recommendation",
-            "what should be done", "what should we do",
-            "next step", "next steps", "delay", "cost overrun",
-        )
-        use_fast_path = bool(analysis) and any(k in normalized_message for k in fast_keywords)
-
+        # Intent-aware local path: common questions should return only the
+        # information requested instead of the same full report every time.
+        # Explicit word-count requests are handled locally and exactly.
         try:
-            if use_fast_path:
-                answer = _build_local_project_assistant_answer(
-                    analysis=analysis,
-                    project=project if "project" in locals() else None,
-                )
-            else:
+            answer = _build_focused_project_assistant_answer(
+                message=message,
+                analysis=analysis,
+                project=project if "project" in locals() else None,
+                project_id=project_id,
+            )
+            if answer is None:
                 result = ask_project_assistant(
                     question=message,
                     analysis=analysis,
