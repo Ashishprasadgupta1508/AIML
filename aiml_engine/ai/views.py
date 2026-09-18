@@ -1663,12 +1663,12 @@ def _get_cached_assistant_analysis(project_id):
 
 def _build_analysis_from_project_id(project_id):
     """
-    Return project context plus a real ML analysis.
+    Fast assistant context builder.
 
-    The assistant endpoint never returns a canned answer. If a prediction was
-    already generated, reuse the cached result. Otherwise run the existing
-    prediction pipeline once, cache it, and let the LLM answer the user's
-    actual question from that analysis.
+    The assistant must not run the full prediction pipeline on every question.
+    Reuse a cached ML prediction when one exists; otherwise pass the real
+    project record to the LLM. The prediction API remains responsible for
+    generating/caching the full ML analysis.
     """
     project = _get_assistant_project_context(project_id)
     if project is None:
@@ -1678,44 +1678,10 @@ def _build_analysis_from_project_id(project_id):
     if isinstance(cached, dict):
         return project, cached
 
-    # Cache miss: generate the same project analysis used by the prediction API.
-    # This is intentionally done once per cache window, not once per question.
-    result = predict_project(project)
-
-    if isinstance(result, dict):
-        cost_result = result.get("cost_prediction")
-        if isinstance(cost_result, dict) and "cost_escalation_analysis" not in cost_result:
-            historical_projects = cost_result.get("historical_projects") or []
-            historical_overruns = [
-                item.get("cost_overrun_percent")
-                for item in historical_projects
-                if isinstance(item, dict) and item.get("cost_overrun_percent") is not None
-            ]
-            try:
-                historical_average_overrun = (
-                    sum(float(value) for value in historical_overruns)
-                    / len(historical_overruns)
-                    if historical_overruns
-                    else None
-                )
-            except (TypeError, ValueError):
-                historical_average_overrun = None
-
-            cost_result = dict(cost_result)
-            cost_result["cost_escalation_analysis"] = _build_cost_escalation_analysis(
-                project=project,
-                predicted_overrun=cost_result.get("predicted_cost_overrun_percent"),
-                spread=cost_result.get("historical_spread_percent"),
-                average_similarity=cost_result.get("average_similarity", 0.0),
-                historical_average_overrun=historical_average_overrun,
-                confidence=cost_result.get("confidence", "LOW"),
-            )
-            result = dict(result)
-            result["cost_prediction"] = cost_result
-
-        _cache_assistant_analysis(project_id, result)
-
-    return project, result
+    return project, {
+        "project": project,
+        "source": "current_project_record_only",
+    }
 
 
 @api_view(["POST"])
