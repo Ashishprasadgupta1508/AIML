@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
-FALLBACK_GEMINI_MODELS = ("gemini-3.7-flash",)
+FALLBACK_GEMINI_MODELS = ("gemini-3.6-flash",)
 GEMINI_RETRYABLE_STATUS_CODES = {408, 500, 502, 503, 504}
 GEMINI_MAX_RETRIES_PER_MODEL = 1
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
