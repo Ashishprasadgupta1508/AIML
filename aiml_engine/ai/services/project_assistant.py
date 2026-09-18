@@ -32,14 +32,31 @@ def _get_model() -> str:
     return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
 
 
-def _compact(value: Any, max_chars: int = 3500) -> Any:
+def _compact(value: Any, max_chars: int = 1800) -> Any:
+    """
+    Keep the assistant context small enough for a fast LLM request while
+    preserving the structured project/ML fields needed for arbitrary questions.
+    This is context compaction, not keyword-based intent routing.
+    """
     if isinstance(value, dict):
-        return {k: _compact(v, max_chars) for k, v in value.items()}
+        result = {}
+        for key, item in value.items():
+            # Historical/raw detail lists can become very large. Keep a few
+            # representative records while preserving their schema.
+            if isinstance(item, list):
+                result[key] = [_compact(v, 1200) for v in item[:5]]
+            else:
+                result[key] = _compact(item, max_chars)
+        return result
+
     if isinstance(value, list):
-        return [_compact(v, max_chars) for v in value[:8]]
+        return [_compact(v, max_chars) for v in value[:5]]
+
     if isinstance(value, str) and len(value) > max_chars:
         return value[:max_chars] + "..."
+
     return value
+
 
 
 def build_assistant_context(
@@ -53,10 +70,21 @@ def build_assistant_context(
     # can be answered. Large lists/text are compacted rather than discarded.
     payload = {
         "user_question": question[:2000],
-        "project_analysis": _compact(a, max_chars=5000),
-        "comparison_projects": _compact((projects or [])[:12], 3000),
+        "project_analysis": _compact(a, max_chars=1800),
+        "comparison_projects": _compact((projects or [])[:5], 1200),
     }
-    return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
+    context = json.dumps(
+        payload,
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )
+
+    # Hard upper bound protects Render/Gemini latency when historical records
+    # contain unusually large stored text.
+    if len(context) > 24000:
+        context = context[:24000] + "..."
+    return context
 
 
 _HTTP_CLIENT = None
@@ -70,7 +98,8 @@ def _get_http_client():
             if _HTTP_CLIENT is None:
                 _HTTP_CLIENT = httpx.Client(
                     http2=False,
-                    timeout=httpx.Timeout(connect=1.0, read=8.0, write=1.0, pool=1.0),
+                    trust_env=False,
+                    timeout=httpx.Timeout(connect=2.0, read=15.0, write=2.0, pool=2.0),
                     limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                 )
     return _HTTP_CLIENT
