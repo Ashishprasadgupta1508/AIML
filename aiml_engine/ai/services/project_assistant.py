@@ -347,8 +347,8 @@ def ask_project_assistant(
     )
 
     # Keep the normal/general-answer path unchanged. Exact word-count requests
-    # are isolated so the word-count fix cannot change reasoning/output behavior
-    # for ordinary project questions.
+    # use a separate output budget and validation path. Gemini 3.6 Flash via
+    # this OpenRouter route requires reasoning to remain enabled.
     answer = _generate(
         prompt=prompt,
         system_instruction=_SYSTEM,
@@ -359,7 +359,7 @@ def ask_project_assistant(
             if requested is not None
             else max(220, min((requested or 120) * 3, 384))
         ),
-        reasoning_enabled=(False if requested is not None else True),
+        reasoning_enabled=True,
     )
 
     if requested is not None and len(answer.split()) != requested:
@@ -384,7 +384,7 @@ def ask_project_assistant(
                 model=model,
                 api_key=api_key,
                 max_tokens=max(128, min(requested * 8, 256)),
-                reasoning_enabled=False,
+                reasoning_enabled=True,
             )
             if len(repaired.split()) == requested:
                 answer = repaired
