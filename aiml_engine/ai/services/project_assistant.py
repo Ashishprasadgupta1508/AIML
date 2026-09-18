@@ -210,6 +210,7 @@ def _generate(
     api_key: str,
     max_tokens: int,
     reasoning_enabled: bool = True,
+    reasoning_max_tokens: int = 96,
 ) -> str:
     payload = {
         "model": model,
@@ -225,8 +226,10 @@ def _generate(
         ],
         "reasoning": {
             "enabled": reasoning_enabled,
+            "max_tokens": max(32, min(reasoning_max_tokens, 128)),
+            "exclude": True,
         },
-        "max_tokens": min(max_tokens, 384),
+        "max_tokens": max(256, min(max_tokens, 768)),
         "temperature": 0.2,
         "stream": False,
     }
@@ -309,7 +312,10 @@ def _generate(
 
 
 def _fit_exact_word_count(text: str, count: int) -> str:
-    words = (text or "").split()
+    # Final deterministic guard only. Normally the model/repair path supplies
+    # exactly the requested count. This avoids changing normal answers.
+    cleaned = re.sub(r"[*_`#]+", "", text or "")
+    words = cleaned.split()
     if len(words) <= count:
         return " ".join(words)
     return " ".join(words[:count]).rstrip(".,;:")
@@ -355,11 +361,12 @@ def ask_project_assistant(
         model=model,
         api_key=api_key,
         max_tokens=(
-            max(128, min(requested * 8, 256))
+            max(384, min(requested * 12, 512))
             if requested is not None
-            else max(220, min((requested or 120) * 3, 384))
+            else 768
         ),
         reasoning_enabled=True,
+        reasoning_max_tokens=64 if requested is not None else 96,
     )
 
     if requested is not None and len(answer.split()) != requested:
@@ -383,8 +390,9 @@ def ask_project_assistant(
                 ),
                 model=model,
                 api_key=api_key,
-                max_tokens=max(128, min(requested * 8, 256)),
+                max_tokens=max(384, min(requested * 12, 512)),
                 reasoning_enabled=True,
+                reasoning_max_tokens=64,
             )
             if len(repaired.split()) == requested:
                 answer = repaired
