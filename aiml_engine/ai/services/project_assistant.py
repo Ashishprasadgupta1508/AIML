@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-FALLBACK_GEMINI_MODELS = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash")
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+FALLBACK_GEMINI_MODELS = ("gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
@@ -168,7 +168,6 @@ def _generate(prompt: str, system_instruction: str, model: str, api_key: str, ma
         "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.15,
             "maxOutputTokens": max_tokens,
         },
     }
