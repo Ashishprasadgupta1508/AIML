@@ -86,8 +86,8 @@ def build_assistant_context(
 
     # Hard upper bound protects Render/Gemini latency when historical records
     # contain unusually large stored text.
-    if len(context) > 24000:
-        context = context[:24000] + "..."
+    if len(context) > 14000:
+        context = context[:14000] + "..."
     return context
 
 
@@ -207,7 +207,10 @@ def _generate(
         "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": max_tokens,
+            "maxOutputTokens": min(max_tokens, 384),
+            "thinkingConfig": {
+                "thinkingLevel": "minimal",
+            },
         },
     }
 
@@ -340,7 +343,7 @@ def ask_project_assistant(
                 system_instruction=_SYSTEM,
                 model=model,
                 api_key=api_key,
-                max_tokens=max(300, (requested or 160) * 4),
+                max_tokens=max(220, min((requested or 120) * 3, 384)),
             )
             used_model = model
             break
