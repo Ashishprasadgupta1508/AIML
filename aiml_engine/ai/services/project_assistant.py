@@ -114,7 +114,21 @@ answer natural and meaningful. Never repeat words, truncate a sentence, append f
 a word-count note.
 
 Use concise, professional infrastructure-management language.
-Return ONLY the answer text.
+First understand what the user is asking semantically.
+Then select only the minimum relevant facts needed to answer that question.
+Do not dump the entire project_analysis into the answer.
+
+Relevance guidance (these are not keyword rules; use the complete meaning of the question):
+- For risk questions, prioritize risk level, risk score, reason, detected issues, risk-related warnings, and supplied recommendations.
+- For cost questions, prioritize predicted final cost, cost overrun, expected range, confidence, and cost-escalation analysis.
+- For schedule questions, prioritize predicted delay, expected delay range, planned duration, confidence, and schedule warnings.
+- For historical or comparison questions, prioritize comparable-project evidence, similarity, and benchmarking data.
+- For general project questions, prioritize project identity and recorded project details.
+- For management/action questions, prioritize the supplied recommended solution and the indicators that justify it.
+- For summaries, synthesize the most decision-relevant available facts instead of repeating the full context.
+
+If a requested category exists in the supplied data, answer it directly. If it does not exist, say that
+the relevant information is unavailable rather than substituting unrelated project facts.\n\nReturn ONLY the answer text.
 """.strip()
 
 
@@ -210,7 +224,15 @@ def ask_project_assistant(
     requested = _extract_requested_word_count(question)
 
     answer = _generate(
-        prompt=context,
+        prompt=(
+            "Answer the user's question from the supplied project context. "
+            "Select only the facts relevant to the question and do not reproduce unrelated fields. "
+            "If the question asks for risk, focus on the supplied risk assessment; if it asks about "
+            "cost, schedule, history, comparison, project details, or actions, focus on the corresponding "
+            "available evidence. These are relevance instructions, not keyword-based routing. "
+            "Use semantic understanding of the complete question.\n\n"
+            + context
+        ),
         system_instruction=_SYSTEM,
         model=model,
         api_key=api_key,
@@ -224,7 +246,9 @@ def ask_project_assistant(
             f"Project data: {context}\n"
             f"Draft answer: {answer}\n\n"
             "Rewrite the draft so it answers the original question naturally in exactly the requested "
-            "number of whitespace-separated words. Do not add unsupported facts. Return only the answer."
+            "number of whitespace-separated words. Keep only facts relevant to the original question. "
+            "Do not add unsupported facts, repeat filler, or include unrelated project fields. "
+            "Return only the answer."
         )
         repaired = _generate(
             prompt=repair_prompt,
