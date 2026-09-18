@@ -178,8 +178,14 @@ def _generate(prompt: str, system_instruction: str, model: str, api_key: str, ma
             json=payload,
         )
     except httpx.HTTPError as exc:
-        print(f"[PROJECT_ASSISTANT] Gemini request error model={model}: {type(exc).__name__}: {exc}")
-        raise AssistantProviderError("Unable to reach the configured LLM provider.") from exc
+        error_type = type(exc).__name__
+        print(
+            f"[PROJECT_ASSISTANT] Gemini transport error "
+            f"model={model} type={error_type}: {exc}"
+        )
+        raise AssistantProviderError(
+            f"Unable to reach the configured LLM provider ({error_type})."
+        ) from exc
 
     if response.status_code >= 400:
         detail = _provider_error(response)
@@ -251,7 +257,30 @@ def ask_project_assistant(
             break
         except AssistantProviderError as exc:
             last_error = exc
-            print(f"[PROJECT_ASSISTANT] model failed: {model}: {exc}")
+            print(
+                f"[PROJECT_ASSISTANT] model failed: {model}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            # A timeout/network failure affects the Gemini endpoint itself.
+            # Trying three more models against the same endpoint only adds
+            # latency, so fail fast. Keep model fallback for HTTP/provider
+            # errors such as an unavailable model.
+            message = str(exc).lower()
+            transport_failure = any(
+                marker in message
+                for marker in (
+                    "unable to reach the configured llm provider",
+                    "timeout",
+                    "timed out",
+                    "connecterror",
+                    "network",
+                )
+            )
+            if transport_failure:
+                raise AssistantProviderError(
+                    f"Gemini transport failure on {model}: {exc}"
+                ) from exc
             continue
 
     if answer is None:
