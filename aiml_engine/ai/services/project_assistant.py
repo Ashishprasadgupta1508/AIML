@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+FALLBACK_GEMINI_MODELS = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
@@ -48,20 +49,12 @@ def build_assistant_context(
 ) -> str:
     """Build a factual context packet. Never invents missing analysis."""
     a = analysis if isinstance(analysis, dict) else {}
-    selected = {
-        "project": a.get("project", {}),
-        "cost_prediction": a.get("cost_prediction", {}),
-        "time_prediction": a.get("time_prediction", {}),
-        "risk": a.get("risk", {}),
-        "early_warning": a.get("early_warning", {}),
-        "benchmarking": a.get("benchmarking", {}),
-        "similar_project_analysis": a.get("similar_project_analysis", {}),
-        "source": a.get("source"),
-    }
+    # Preserve every analysis section so arbitrary project-related questions
+    # can be answered. Large lists/text are compacted rather than discarded.
     payload = {
         "user_question": question[:2000],
-        "project_analysis": _compact(selected),
-        "comparison_projects": _compact((projects or [])[:8], 2200),
+        "project_analysis": _compact(a, max_chars=5000),
+        "comparison_projects": _compact((projects or [])[:12], 3000),
     }
     return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
 
@@ -186,6 +179,7 @@ def _generate(prompt: str, system_instruction: str, model: str, api_key: str, ma
             json=payload,
         )
     except httpx.HTTPError as exc:
+        print(f"[PROJECT_ASSISTANT] Gemini request error model={model}: {type(exc).__name__}: {exc}")
         raise AssistantProviderError("Unable to reach the configured LLM provider.") from exc
 
     if response.status_code >= 400:
@@ -209,6 +203,15 @@ def _fit_exact_word_count(text: str, count: int) -> str:
     return " ".join(words[:count]).rstrip(".,;:")
 
 
+def _model_candidates() -> List[str]:
+    configured = _get_model()
+    models = [configured]
+    for candidate in FALLBACK_GEMINI_MODELS:
+        if candidate not in models:
+            models.append(candidate)
+    return models
+
+
 def ask_project_assistant(
     question: str,
     analysis: Optional[Dict[str, Any]] = None,
@@ -219,25 +222,43 @@ def ask_project_assistant(
         raise ValueError("message is required.")
 
     api_key = _get_api_key()
-    model = _get_model()
     context = build_assistant_context(question, analysis, projects)
     requested = _extract_requested_word_count(question)
 
-    answer = _generate(
-        prompt=(
-            "Answer the user's question from the supplied project context. "
-            "Select only the facts relevant to the question and do not reproduce unrelated fields. "
-            "If the question asks for risk, focus on the supplied risk assessment; if it asks about "
-            "cost, schedule, history, comparison, project details, or actions, focus on the corresponding "
-            "available evidence. These are relevance instructions, not keyword-based routing. "
-            "Use semantic understanding of the complete question.\n\n"
-            + context
-        ),
-        system_instruction=_SYSTEM,
-        model=model,
-        api_key=api_key,
-        max_tokens=max(300, (requested or 80) * 4),
+    prompt = (
+        "The user is asking a question about the supplied infrastructure project. "
+        "Understand the question semantically and answer it directly. Select only the "
+        "evidence needed for that question from the supplied context. Do not paste a "
+        "generic project description when the question asks about a specific topic. "
+        "If the requested information is absent, explicitly say it is unavailable in "
+        "the supplied project analysis.\n\n"
+        + context
     )
+
+    last_error = None
+    answer = None
+    used_model = None
+
+    for model in _model_candidates():
+        try:
+            answer = _generate(
+                prompt=prompt,
+                system_instruction=_SYSTEM,
+                model=model,
+                api_key=api_key,
+                max_tokens=max(300, (requested or 160) * 4),
+            )
+            used_model = model
+            break
+        except AssistantProviderError as exc:
+            last_error = exc
+            print(f"[PROJECT_ASSISTANT] model failed: {model}: {exc}")
+            continue
+
+    if answer is None:
+        raise AssistantProviderError(
+            f"All configured Gemini models failed. Last error: {last_error}"
+        )
 
     if requested is not None and len(answer.split()) != requested:
         repair_prompt = (
@@ -245,25 +266,30 @@ def ask_project_assistant(
             f"Original user question: {question}\n"
             f"Project data: {context}\n"
             f"Draft answer: {answer}\n\n"
-            "Rewrite the draft so it answers the original question naturally in exactly the requested "
-            "number of whitespace-separated words. Keep only facts relevant to the original question. "
-            "Do not add unsupported facts, repeat filler, or include unrelated project fields. "
+            "Rewrite the draft so it answers the original question naturally in exactly "
+            "the requested number of whitespace-separated words. Keep only facts relevant "
+            "to the original question. Do not add unsupported facts or unrelated fields. "
             "Return only the answer."
         )
-        repaired = _generate(
-            prompt=repair_prompt,
-            system_instruction=(
-                "You are an exact-length answer editor. Preserve factual meaning from the supplied data. "
-                "Return only a natural answer with exactly the requested number of whitespace-separated words. "
-                "Never repeat words as filler and never invent facts."
-            ),
-            model=model,
-            api_key=api_key,
-            max_tokens=max(80, requested * 3),
-        )
-        if len(repaired.split()) == requested:
-            answer = repaired
-        else:
-            answer = _fit_exact_word_count(repaired, requested)
+        try:
+            repaired = _generate(
+                prompt=repair_prompt,
+                system_instruction=(
+                    "You are an exact-length answer editor. Preserve factual meaning from "
+                    "the supplied data. Return only a natural answer with exactly the requested "
+                    "number of whitespace-separated words. Never invent facts."
+                ),
+                model=used_model,
+                api_key=api_key,
+                max_tokens=max(80, requested * 3),
+            )
+            if len(repaired.split()) == requested:
+                answer = repaired
+            else:
+                answer = _fit_exact_word_count(repaired, requested)
+        except AssistantProviderError:
+            # Keep the successful primary answer rather than replacing it with a fallback.
+            pass
 
-    return {"answer": answer, "provider": "gemini", "model": model}
+    return {"answer": answer, "provider": "gemini", "model": used_model}
+

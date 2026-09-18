@@ -1640,7 +1640,7 @@ def _get_assistant_project_context(project_id):
 
 _ASSISTANT_ANALYSIS_CACHE = {}
 _ASSISTANT_ANALYSIS_CACHE_MAX = 128
-_ASSISTANT_ANALYSIS_CACHE_TTL = 300
+_ASSISTANT_ANALYSIS_CACHE_TTL = 900
 
 def _cache_assistant_analysis(project_id, analysis):
     if not isinstance(analysis, dict):
@@ -1662,12 +1662,60 @@ def _get_cached_assistant_analysis(project_id):
     return analysis
 
 def _build_analysis_from_project_id(project_id):
-    """Cheap assistant context only; never invoke predict_project()."""
+    """
+    Return project context plus a real ML analysis.
+
+    The assistant endpoint never returns a canned answer. If a prediction was
+    already generated, reuse the cached result. Otherwise run the existing
+    prediction pipeline once, cache it, and let the LLM answer the user's
+    actual question from that analysis.
+    """
     project = _get_assistant_project_context(project_id)
     if project is None:
         return None, None
 
-    return project, _get_cached_assistant_analysis(project_id)
+    cached = _get_cached_assistant_analysis(project_id)
+    if isinstance(cached, dict):
+        return project, cached
+
+    # Cache miss: generate the same project analysis used by the prediction API.
+    # This is intentionally done once per cache window, not once per question.
+    result = predict_project(project)
+
+    if isinstance(result, dict):
+        cost_result = result.get("cost_prediction")
+        if isinstance(cost_result, dict) and "cost_escalation_analysis" not in cost_result:
+            historical_projects = cost_result.get("historical_projects") or []
+            historical_overruns = [
+                item.get("cost_overrun_percent")
+                for item in historical_projects
+                if isinstance(item, dict) and item.get("cost_overrun_percent") is not None
+            ]
+            try:
+                historical_average_overrun = (
+                    sum(float(value) for value in historical_overruns)
+                    / len(historical_overruns)
+                    if historical_overruns
+                    else None
+                )
+            except (TypeError, ValueError):
+                historical_average_overrun = None
+
+            cost_result = dict(cost_result)
+            cost_result["cost_escalation_analysis"] = _build_cost_escalation_analysis(
+                project=project,
+                predicted_overrun=cost_result.get("predicted_cost_overrun_percent"),
+                spread=cost_result.get("historical_spread_percent"),
+                average_similarity=cost_result.get("average_similarity", 0.0),
+                historical_average_overrun=historical_average_overrun,
+                confidence=cost_result.get("confidence", "LOW"),
+            )
+            result = dict(result)
+            result["cost_prediction"] = cost_result
+
+        _cache_assistant_analysis(project_id, result)
+
+    return project, result
 
 
 @api_view(["POST"])
@@ -1686,6 +1734,7 @@ def project_assistant_api(request):
         analysis = body.get("analysis")
         projects = body.get("projects")
         project_id = body.get("project_id")
+        project = None
 
         if project_id not in (None, ""):
             try:
@@ -1706,8 +1755,8 @@ def project_assistant_api(request):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            # Explicit analysis always wins; otherwise reuse cached ML output.
-            if analysis is None and generated_analysis is not None:
+            # Explicit analysis wins. Otherwise use the real ML analysis.
+            if analysis is None:
                 analysis = generated_analysis
 
         if analysis is not None and not isinstance(analysis, dict):
@@ -1722,14 +1771,6 @@ def project_assistant_api(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if analysis is None and not projects and project is not None:
-            # No cached prediction yet: use only the current project record.
-            # Crucially, do not trigger the expensive ML pipeline.
-            analysis = {
-                "project": project,
-                "source": "current_project_record_only",
-            }
-
         if analysis is None and not projects:
             return Response(
                 {
@@ -1740,36 +1781,43 @@ def project_assistant_api(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Primary path: let the LLM understand the user's natural-language
-        # request and choose the relevant facts. There is deliberately no
-        # keyword/intent switch here.
-        try:
-            result = ask_project_assistant(
-                question=message,
-                analysis=analysis,
-                projects=projects,
-            )
-            answer = result["answer"]
-        except (AssistantConfigurationError, AssistantProviderError):
-            answer = _assistant_local_fallback(
-                analysis=analysis,
-                project=project if "project" in locals() else None,
-                message=message,
-            )
-        except Exception:
-            answer = _assistant_local_fallback(
-                analysis=analysis,
-                project=project if "project" in locals() else None,
-                message=message,
-            )
+        # Genuine AI path. There is intentionally NO keyword routing and NO
+        # deterministic fallback answer. Every question is interpreted by the
+        # LLM against the supplied project/ML context.
+        result = ask_project_assistant(
+            question=message,
+            analysis=analysis,
+            projects=projects,
+        )
 
         return Response(
             {
                 "question": message.strip(),
-                "answer": answer,
+                "answer": result["answer"],
                 "project_id": project_id,
             },
             status=status.HTTP_200_OK,
+        )
+
+    except AssistantConfigurationError as exc:
+        print(f"[PROJECT_ASSISTANT] Configuration error: {exc}")
+        return Response(
+            {
+                "error": str(exc),
+                "code": "LLM_NOT_CONFIGURED",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except AssistantProviderError as exc:
+        import traceback
+        print(f"[PROJECT_ASSISTANT] Provider error: {exc}")
+        traceback.print_exc()
+        return Response(
+            {
+                "error": str(exc),
+                "code": "LLM_PROVIDER_ERROR",
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
         )
     except ValueError as exc:
         return Response(
@@ -1778,7 +1826,9 @@ def project_assistant_api(request):
         )
     except Exception:
         import traceback
+        print("========== PROJECT ASSISTANT ERROR ==========")
         traceback.print_exc()
+        print("=============================================")
         return Response(
             {"error": "Project assistant failed."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
